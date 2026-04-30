@@ -106,19 +106,28 @@
     </div>
     <h2>Coupe</h2>
     <div class="row">
-      <label>Vitesse ligne</label>
-      <input type="range" id="p_lineSpeed" min="40" max="800" step="10">
-      <span class="val" id="v_lineSpeed"></span>
-    </div>
-    <div class="row">
-      <label>Vitesse découpe</label>
+      <label>Vitesse</label>
       <input type="range" id="p_animDur" min="200" max="3000" step="50">
       <span class="val" id="v_animDur"></span>
+    </div>
+    <div class="row">
+      <label>Mode</label>
+      <select id="p_cutMode">
+        <option value="rigid">Rigide</option>
+        <option value="jelly">Jelly</option>
+        <option value="wave">Vague</option>
+        <option value="squash">Squash</option>
+      </select>
     </div>
     <div class="row">
       <label>Élasticité</label>
       <input type="range" id="p_elasticity" min="3" max="20" step="0.5">
       <span class="val" id="v_elasticity"></span>
+    </div>
+    <div class="row">
+      <label>Spread jelly</label>
+      <input type="range" id="p_jellySpread" min="0" max="0.4" step="0.01">
+      <span class="val" id="v_jellySpread"></span>
     </div>
     <div class="row">
       <label>Écartement</label>
@@ -129,6 +138,37 @@
       <label>Pièces colorées</label>
       <input type="range" id="p_colorCount" min="0" max="8" step="1">
       <span class="val" id="v_colorCount"></span>
+    </div>
+    <h2>Ligne</h2>
+    <div class="row">
+      <label>Vitesse</label>
+      <input type="range" id="p_lineSpeed" min="40" max="800" step="10">
+      <span class="val" id="v_lineSpeed"></span>
+    </div>
+    <div class="row">
+      <label>Maintien</label>
+      <input type="range" id="p_splitPhase" min="50" max="1500" step="25">
+      <span class="val" id="v_splitPhase"></span>
+    </div>
+    <div class="row">
+      <label>Pause</label>
+      <input type="range" id="p_pausePhase" min="0" max="1500" step="25">
+      <span class="val" id="v_pausePhase"></span>
+    </div>
+    <div class="row">
+      <label>Glow</label>
+      <input type="range" id="p_glow" min="0" max="60" step="1">
+      <span class="val" id="v_glow"></span>
+    </div>
+    <div class="row">
+      <label>Glow decay</label>
+      <input type="range" id="p_glowDecay" min="40" max="1000" step="20">
+      <span class="val" id="v_glowDecay"></span>
+    </div>
+    <div class="row">
+      <label>Glow intensité</label>
+      <input type="range" id="p_glowIntensity" min="0.1" max="2" step="0.05">
+      <span class="val" id="v_glowIntensity"></span>
     </div>
     <h2>Couleur</h2>
     <div class="row">
@@ -180,11 +220,18 @@ const settings = {
   camPanDuration: 900,
   camCuts: 3,
   camOverviewHold: 350,
-  lineSpeed: 160,
   animDuration: 1000,
   elasticity: 9,
   separation: 32,
+  cutMode: 'jelly',
+  jellySpread: 0.1,
   colorCount: 1,
+  lineSpeed: 160,
+  splitPhase: 250,
+  pausePhase: 250,
+  glow: 24,
+  glowDecay: 220,
+  glowIntensity: 1,
   fadeMin: 10000,
   fadeMax: 20000,
   bgColor: '#eaeaea',
@@ -193,8 +240,6 @@ const settings = {
   strokeStyle: 'rivets',
 };
 
-const SPLIT_PHASE = 250;
-const PAUSE_PHASE = 250;
 const MIN_AREA = 250;
 const DOT_SPACING = 14;
 const FIRST_CUT_DELAY = 600;
@@ -251,6 +296,14 @@ function hexToRgb(hex) {
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
 }
 function neutralRGB() { return hexToRgb(settings.strokeColor); }
+function glowColorFor(hslStr) {
+  const m = hslStr.match(/hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)/);
+  if (!m) return hslStr;
+  const h = parseFloat(m[1]);
+  const s = parseFloat(m[2]) * 0.6;
+  const l = Math.min(88, parseFloat(m[3]) + 30);
+  return `hsl(${h}, ${s}%, ${l}%)`;
+}
 
 // ---------- geometry ----------
 function centroid(pts) {
@@ -457,6 +510,77 @@ function easeInOut(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+// ---------- per-point animation modes ----------
+function rigidPointPos(p, anim) {
+  const e = elasticOut(anim.t);
+  const ox = anim.targetDx * e;
+  const oy = anim.targetDy * e;
+  const angle = anim.startAngle * (1 - e);
+  if (angle === 0) return { x: p.x + ox, y: p.y + oy };
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const dx = p.x - anim.pivot.x;
+  const dy = p.y - anim.pivot.y;
+  return {
+    x: anim.pivot.x + ox + dx * cosA - dy * sinA,
+    y: anim.pivot.y + oy + dx * sinA + dy * cosA,
+  };
+}
+
+function delayedPos(p, anim, relDist) {
+  const startT = relDist * anim.spread;
+  const denom = 1 - startT;
+  const localT = denom > 0
+    ? Math.max(0, Math.min(1, (anim.t - startT) / denom))
+    : (anim.t >= startT ? 1 : 0);
+  const e = elasticOut(localT);
+  return { x: p.x + anim.targetDx * e, y: p.y + anim.targetDy * e };
+}
+
+function jellyPointPos(p, anim) {
+  // delay by distance to cut line: points near the line move first
+  const d = Math.abs(anim.line.a * p.x + anim.line.b * p.y + anim.line.c);
+  const rel = anim.maxDist > 0 ? d / anim.maxDist : 0;
+  return delayedPos(p, anim, rel);
+}
+
+function wavePointPos(p, anim) {
+  // wave propagates from one end of the cut to the other
+  const dx = p.x - anim.pivot.x, dy = p.y - anim.pivot.y;
+  const tDot = dx * (-anim.line.b) + dy * anim.line.a;
+  const range = anim.maxAlong - anim.minAlong;
+  const rel = range > 0 ? (tDot - anim.minAlong) / range : 0;
+  return delayedPos(p, anim, rel);
+}
+
+function squashPointPos(p, anim) {
+  // rigid translate + non-uniform scale wobble around pivot
+  const e = elasticOut(anim.t);
+  const ox = anim.targetDx * e;
+  const oy = anim.targetDy * e;
+  const pulse = anim.t < 0.6 ? Math.sin((anim.t / 0.6) * Math.PI) : 0;
+  const stretch = 1 + 0.45 * pulse;  // along motion (cut normal)
+  const squeeze = 1 - 0.22 * pulse;  // perpendicular (along cut)
+  const cx = anim.pivot.x, cy = anim.pivot.y;
+  const dx = p.x - cx, dy = p.y - cy;
+  const nDot = dx * anim.line.a + dy * anim.line.b;
+  const tDot = dx * (-anim.line.b) + dy * anim.line.a;
+  const nNew = nDot * stretch;
+  const tNew = tDot * squeeze;
+  return {
+    x: cx + ox + nNew * anim.line.a - tNew * anim.line.b,
+    y: cy + oy + nNew * anim.line.b + tNew * anim.line.a,
+  };
+}
+
+function animatedPoint(p, anim) {
+  switch (anim.mode) {
+    case 'jelly':  return jellyPointPos(p, anim);
+    case 'wave':   return wavePointPos(p, anim);
+    case 'squash': return squashPointPos(p, anim);
+    default:       return rigidPointPos(p, anim);
+  }
+}
+
 // ---------- camera ----------
 function animateCamera(target, duration, onDone) {
   cameraAnim = { from: { ...camera }, to: target, t: 0, duration, onDone };
@@ -603,11 +727,27 @@ function applyCut(line) {
     const shape = { points: item.basePoints, color: item.color, fade: item.fade };
     if (moves) {
       const c = centroid(item.basePoints);
+      const mode = item.isCut ? settings.cutMode : 'rigid';
+      // for jelly/wave/squash, suppress spin (per-point effects shine without rotation noise)
+      const startAngle = (mode === 'rigid') ? item.spin : 0;
+      // precompute distances to the cut line for the per-point modes
+      let maxDist = 0, minAlong = Infinity, maxAlong = -Infinity;
+      if (line && (mode === 'jelly' || mode === 'wave' || mode === 'squash')) {
+        for (const p of item.basePoints) {
+          const d = Math.abs(line.a * p.x + line.b * p.y + line.c);
+          if (d > maxDist) maxDist = d;
+          const dx = p.x - c.x, dy = p.y - c.y;
+          const t = dx * (-line.b) + dy * line.a;
+          if (t < minAlong) minAlong = t;
+          if (t > maxAlong) maxAlong = t;
+        }
+      }
       shape.anim = {
         targetDx: item.dx, targetDy: item.dy,
-        startAngle: item.spin, pivot: c,
-        ox: 0, oy: 0, angle: item.spin,
-        t: 0, duration: settings.animDuration
+        startAngle, pivot: c,
+        t: 0, duration: settings.animDuration,
+        mode, line, maxDist, minAlong, maxAlong,
+        spread: settings.jellySpread,
       };
     }
     next.push(shape);
@@ -679,10 +819,6 @@ function update(dt) {
   for (const s of shapes) {
     if (s.anim && s.anim.t < 1) {
       s.anim.t = Math.min(1, s.anim.t + dt / s.anim.duration);
-      const e = elasticOut(s.anim.t);
-      s.anim.ox = s.anim.targetDx * e;
-      s.anim.oy = s.anim.targetDy * e;
-      s.anim.angle = s.anim.startAngle * (1 - e);
       if (s.anim.t >= 1) {
         for (const p of s.points) {
           p.x += s.anim.targetDx;
@@ -708,11 +844,11 @@ function update(dt) {
     if (cutState.phase === 'draw' && cutState.t >= settings.lineSpeed) {
       cutState.phase = 'split'; cutState.t = 0;
       applyCut(cutState.line);
-    } else if (cutState.phase === 'split' && cutState.t >= SPLIT_PHASE) {
+    } else if (cutState.phase === 'split' && cutState.t >= settings.splitPhase) {
       cutState.phase = 'fade'; cutState.t = 0;
     } else if (cutState.phase === 'fade' && cutState.t >= settings.lineSpeed) {
       cutState.phase = 'pause'; cutState.t = 0;
-    } else if (cutState.phase === 'pause' && cutState.t >= PAUSE_PHASE) {
+    } else if (cutState.phase === 'pause' && cutState.t >= settings.pausePhase) {
       cutState = null;
     }
   }
@@ -733,15 +869,8 @@ function applyStrokeStyle() {
 }
 
 function drawShape(s) {
-  const pts = s.points;
+  const pts = s.anim ? s.points.map(p => animatedPoint(p, s.anim)) : s.points;
   const n = pts.length;
-  ctx.save();
-  if (s.anim) {
-    const { pivot, ox, oy, angle } = s.anim;
-    ctx.translate(pivot.x + ox, pivot.y + oy);
-    ctx.rotate(angle);
-    ctx.translate(-pivot.x, -pivot.y);
-  }
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
   for (let i = 1; i < n; i++) ctx.lineTo(pts[i].x, pts[i].y);
@@ -771,7 +900,6 @@ function drawShape(s) {
       }
     }
   }
-  ctx.restore();
 }
 
 function drawCutLine() {
@@ -782,13 +910,37 @@ function drawCutLine() {
   if (phase === 'draw') progress = t / settings.lineSpeed;
   else if (phase === 'fade') alpha = 1 - t / settings.lineSpeed;
   else if (phase === 'pause') alpha = 0;
+  // glow alpha: ramps in with the line, then fades quickly during the split phase
+  let glowAlpha = 0;
+  if (phase === 'draw') glowAlpha = progress;
+  else if (phase === 'split') glowAlpha = Math.max(0, 1 - t / settings.glowDecay);
   const ex = p1.x + (p2.x - p1.x) * progress;
   const ey = p1.y + (p2.y - p1.y) * progress;
+  const baseLW = 2.5 / camera.scale;
   ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth = 2.5 / camera.scale;
   ctx.lineCap = 'round';
+  if (settings.glow > 0 && glowAlpha > 0) {
+    const glowCol = glowColorFor(lineColor);
+    // outer halo: wide, very transparent
+    ctx.strokeStyle = glowCol;
+    ctx.lineWidth = baseLW + settings.glow / camera.scale;
+    ctx.globalAlpha = alpha * glowAlpha * 0.18 * settings.glowIntensity;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    // inner halo: narrower, brighter
+    ctx.lineWidth = baseLW + (settings.glow * 0.4) / camera.scale;
+    ctx.globalAlpha = alpha * glowAlpha * 0.42 * settings.glowIntensity;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+  }
+  // main line
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = baseLW;
+  ctx.globalAlpha = alpha;
   ctx.beginPath();
   ctx.moveTo(p1.x, p1.y);
   ctx.lineTo(ex, ey);
@@ -838,6 +990,7 @@ function fmtPx(v) { return v + 'px'; }
 function fmtSec(v) { return (v / 1000).toFixed(1) + 's'; }
 function fmtNum(v) { return String(v); }
 function fmtFloat(v) { return v.toFixed(1); }
+function fmtFloat2(v) { return v.toFixed(2); }
 
 function bindRange(id, key, fmt, onChange) {
   const el = document.getElementById(id);
@@ -896,9 +1049,16 @@ bindRange('p_camCuts',        'camCuts',        fmtNum);
 bindRange('p_camOverviewHold','camOverviewHold',fmtMs);
 bindRange('p_lineSpeed',      'lineSpeed',      fmtMs);
 bindRange('p_animDur',        'animDuration',   fmtMs);
+bindSelect('p_cutMode',       'cutMode');
 bindRange('p_elasticity',     'elasticity',     fmtFloat);
+bindRange('p_jellySpread',    'jellySpread',    fmtFloat2);
 bindRange('p_separation',     'separation',     fmtPx);
 bindRange('p_colorCount',     'colorCount',     fmtNum);
+bindRange('p_splitPhase',     'splitPhase',     fmtMs);
+bindRange('p_pausePhase',     'pausePhase',     fmtMs);
+bindRange('p_glow',           'glow',           fmtPx);
+bindRange('p_glowDecay',      'glowDecay',      fmtMs);
+bindRange('p_glowIntensity',  'glowIntensity',  fmtFloat2);
 bindRange('p_fadeMin',        'fadeMin',        fmtSec, () => {
   if (settings.fadeMax < settings.fadeMin) {
     settings.fadeMax = settings.fadeMin;
