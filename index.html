@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Slice Demo</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #eaeaea; }
+    canvas { display: block; }
+    .hint {
+      position: fixed; bottom: 12px; left: 12px;
+      font: 12px -apple-system, system-ui, sans-serif;
+      color: #888; user-select: none;
+      pointer-events: none;
+    }
+    .toggle {
+      position: fixed; top: 12px; right: 12px;
+      width: 40px; height: 40px;
+      border: none; background: rgba(255,255,255,0.55);
+      border-radius: 8px; cursor: pointer;
+      font-size: 20px; line-height: 40px; text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+      z-index: 100; user-select: none;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+    .toggle:hover { background: rgba(255,255,255,0.8); }
+    .panel {
+      position: fixed; top: 0; right: 0;
+      height: 100vh; width: 320px;
+      background: rgba(252,252,252,0.40);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      padding: 56px 16px 16px; box-sizing: border-box;
+      overflow-y: auto;
+      z-index: 99;
+      font: 13px -apple-system, system-ui, sans-serif;
+      color: #1a1a1a;
+      border-left: 1px solid rgba(0,0,0,0.06);
+      box-shadow: -4px 0 20px rgba(0,0,0,0.05);
+      transition: transform 0.25s ease;
+      text-shadow: 0 0 1px rgba(255,255,255,0.4);
+    }
+    .panel[hidden] { display: block; transform: translateX(100%); }
+    .panel:not([hidden]) { transform: translateX(0); }
+    .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+      margin: 16px 0 6px; color: #555; font-weight: 600; }
+    .panel h2:first-child { margin-top: 0; }
+    .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .row label { flex: 0 0 110px; color: #333; }
+    .row input[type=range] { flex: 1; min-width: 0; }
+    .row .val { flex: 0 0 48px; text-align: right; color: #111;
+      font-variant-numeric: tabular-nums; font-size: 12px; }
+    .row select, .row input[type=color] { flex: 1; }
+    .row input[type=color] { height: 22px; padding: 0; border: 1px solid rgba(0,0,0,0.2); border-radius: 3px; }
+    .row input[type=checkbox] { margin-left: 0; }
+    .panel .actions { margin-top: 14px; }
+    .panel button.action { width: 100%; padding: 8px; cursor: pointer;
+      background: rgba(20,20,20,0.85); color: #fff; border: none; border-radius: 6px;
+      font: inherit; }
+    .panel button.action:hover { background: rgba(40,40,40,0.95); }
+    .cam-only { transition: opacity 0.15s; }
+    body.no-cam .cam-only { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div class="hint">click / espace = recommencer</div>
+  <button class="toggle" id="toggleBtn" title="Réglages">⚙</button>
+  <div class="panel" id="panel" hidden>
+    <h2>Setup</h2>
+    <div class="row">
+      <label>Formes</label>
+      <input type="range" id="p_count" min="1" max="30" step="1">
+      <span class="val" id="v_count"></span>
+    </div>
+    <div class="row">
+      <label>Mode caméra</label>
+      <input type="checkbox" id="p_cinematic">
+    </div>
+    <h2 class="cam-only">Caméra</h2>
+    <div class="row cam-only">
+      <label>Padding</label>
+      <input type="range" id="p_camPadding" min="10" max="200" step="5">
+      <span class="val" id="v_camPadding"></span>
+    </div>
+    <div class="row cam-only">
+      <label>Zoom max</label>
+      <input type="range" id="p_camMaxZoom" min="1" max="5" step="0.1">
+      <span class="val" id="v_camMaxZoom"></span>
+    </div>
+    <div class="row cam-only">
+      <label>Vitesse pan</label>
+      <input type="range" id="p_camPanDuration" min="200" max="2500" step="50">
+      <span class="val" id="v_camPanDuration"></span>
+    </div>
+    <div class="row cam-only">
+      <label>Coupes/zone</label>
+      <input type="range" id="p_camCuts" min="1" max="6" step="1">
+      <span class="val" id="v_camCuts"></span>
+    </div>
+    <div class="row cam-only">
+      <label>Pause vue</label>
+      <input type="range" id="p_camOverviewHold" min="0" max="2000" step="50">
+      <span class="val" id="v_camOverviewHold"></span>
+    </div>
+    <h2>Coupe</h2>
+    <div class="row">
+      <label>Vitesse ligne</label>
+      <input type="range" id="p_lineSpeed" min="40" max="800" step="10">
+      <span class="val" id="v_lineSpeed"></span>
+    </div>
+    <div class="row">
+      <label>Vitesse découpe</label>
+      <input type="range" id="p_animDur" min="200" max="3000" step="50">
+      <span class="val" id="v_animDur"></span>
+    </div>
+    <div class="row">
+      <label>Élasticité</label>
+      <input type="range" id="p_elasticity" min="3" max="20" step="0.5">
+      <span class="val" id="v_elasticity"></span>
+    </div>
+    <div class="row">
+      <label>Écartement</label>
+      <input type="range" id="p_separation" min="5" max="100" step="1">
+      <span class="val" id="v_separation"></span>
+    </div>
+    <div class="row">
+      <label>Pièces colorées</label>
+      <input type="range" id="p_colorCount" min="0" max="8" step="1">
+      <span class="val" id="v_colorCount"></span>
+    </div>
+    <h2>Couleur</h2>
+    <div class="row">
+      <label>Fade min</label>
+      <input type="range" id="p_fadeMin" min="1000" max="60000" step="500">
+      <span class="val" id="v_fadeMin"></span>
+    </div>
+    <div class="row">
+      <label>Fade max</label>
+      <input type="range" id="p_fadeMax" min="1000" max="60000" step="500">
+      <span class="val" id="v_fadeMax"></span>
+    </div>
+    <h2>Apparence</h2>
+    <div class="row">
+      <label>Fond</label>
+      <input type="color" id="p_bg">
+    </div>
+    <div class="row">
+      <label>Trait</label>
+      <input type="color" id="p_stroke">
+    </div>
+    <div class="row">
+      <label>Épaisseur</label>
+      <input type="range" id="p_strokeWidth" min="1" max="14" step="1">
+      <span class="val" id="v_strokeWidth"></span>
+    </div>
+    <div class="row">
+      <label>Style</label>
+      <select id="p_strokeStyle">
+        <option value="rivets">Rivets</option>
+        <option value="solid">Continu</option>
+        <option value="dashed">Tirets</option>
+        <option value="dotted">Pointillés</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button class="action" id="resetBtn">Recommencer</button>
+    </div>
+  </div>
+<script>
+const settings = {
+  shapeCount: 10,
+  cinematic: true,
+  camPadding: 70,
+  camMaxZoom: 2.6,
+  camPanDuration: 900,
+  camCuts: 3,
+  camOverviewHold: 350,
+  lineSpeed: 160,
+  animDuration: 1000,
+  elasticity: 9,
+  separation: 32,
+  colorCount: 1,
+  fadeMin: 10000,
+  fadeMax: 20000,
+  bgColor: '#eaeaea',
+  strokeColor: '#9a9a9a',
+  strokeWidth: 5,
+  strokeStyle: 'rivets',
+};
+
+const SPLIT_PHASE = 250;
+const PAUSE_PHASE = 250;
+const MIN_AREA = 250;
+const DOT_SPACING = 14;
+const FIRST_CUT_DELAY = 600;
+const ZONE_TOLERANCE = 60; // extra radius around an initial shape to find descendants
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', () => { resize(); reset(); });
+resize();
+
+let shapes = [];
+let zones = [];           // { cx, cy, radius } from initial shapes; never mutated after reset
+let cutState = null;
+let camera = { cx: 0, cy: 0, scale: 1 };
+let cameraAnim = null;
+let cinematicState = null;
+let nextCutDelay = 0;
+
+function identityCamera() { return { cx: W / 2, cy: H / 2, scale: 1 }; }
+
+// ---------- color helpers ----------
+function hslToRgb(h, s, l) {
+  s /= 100; l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r, g, b;
+  if (h < 60)       { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else              { r = c; g = 0; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+function parseHSL(str) {
+  const m = str.match(/hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)/);
+  if (!m) return [128, 128, 128];
+  return hslToRgb(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+}
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+function neutralRGB() { return hexToRgb(settings.strokeColor); }
+
+// ---------- geometry ----------
+function centroid(pts) {
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  return { x: cx / pts.length, y: cy / pts.length };
+}
+function area(pts) {
+  let a = 0;
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const p1 = pts[i], p2 = pts[(i + 1) % n];
+    a += p1.x * p2.y - p2.x * p1.y;
+  }
+  return Math.abs(a) / 2;
+}
+function boundingRadius(pts, c) {
+  let r = 0;
+  for (const p of pts) {
+    const d = Math.hypot(p.x - c.x, p.y - c.y);
+    if (d > r) r = d;
+  }
+  return r;
+}
+function finalCentroid(s) {
+  const c = centroid(s.points);
+  if (s.anim) return { x: c.x + s.anim.targetDx, y: c.y + s.anim.targetDy };
+  return c;
+}
+
+function makeCircle(cx, cy, r, segments = 28) {
+  const pts = [];
+  const a0 = Math.random() * Math.PI * 2;
+  for (let i = 0; i < segments; i++) {
+    const a = a0 + (i / segments) * Math.PI * 2;
+    pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+  }
+  return pts;
+}
+function makeTriangle(cx, cy, r) {
+  const a0 = Math.random() * Math.PI * 2;
+  const pts = [];
+  for (let i = 0; i < 3; i++) {
+    const a = a0 + i * (Math.PI * 2 / 3);
+    const rr = r * (0.85 + Math.random() * 0.3);
+    pts.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr });
+  }
+  return pts;
+}
+function makeParallelogram(cx, cy, r) {
+  const a0 = Math.random() * Math.PI * 2;
+  const a1 = a0 + (Math.PI / 3 + Math.random() * Math.PI / 3);
+  const len1 = r * (0.9 + Math.random() * 0.4);
+  const len2 = r * (0.9 + Math.random() * 0.4);
+  const v1 = { x: Math.cos(a0) * len1, y: Math.sin(a0) * len1 };
+  const v2 = { x: Math.cos(a1) * len2, y: Math.sin(a1) * len2 };
+  return [
+    { x: cx - v1.x / 2 - v2.x / 2, y: cy - v1.y / 2 - v2.y / 2 },
+    { x: cx + v1.x / 2 - v2.x / 2, y: cy + v1.y / 2 - v2.y / 2 },
+    { x: cx + v1.x / 2 + v2.x / 2, y: cy + v1.y / 2 + v2.y / 2 },
+    { x: cx - v1.x / 2 + v2.x / 2, y: cy - v1.y / 2 + v2.y / 2 },
+  ];
+}
+
+function generateInitialShapes(count) {
+  const out = [];
+  const margin = 50;
+  const minR = 45, maxR = 95;
+  let attempts = 0;
+  while (out.length < count && attempts < 8000) {
+    attempts++;
+    const r = minR + Math.random() * (maxR - minR);
+    const cx = margin + r + Math.random() * Math.max(1, W - 2 * (margin + r));
+    const cy = margin + r + Math.random() * Math.max(1, H - 2 * (margin + r));
+    let ok = true;
+    for (const s of out) {
+      const c = centroid(s.points);
+      const sr = boundingRadius(s.points, c);
+      if (Math.hypot(cx - c.x, cy - c.y) < r + sr + 12) { ok = false; break; }
+    }
+    if (!ok) continue;
+    const kind = Math.floor(Math.random() * 3);
+    let pts;
+    if (kind === 0) pts = makeCircle(cx, cy, r);
+    else if (kind === 1) pts = makeTriangle(cx, cy, r);
+    else pts = makeParallelogram(cx, cy, r);
+    out.push({ points: pts, color: settings.strokeColor });
+  }
+  return out;
+}
+
+function buildZones(initialShapes) {
+  return initialShapes.map(s => {
+    const c = centroid(s.points);
+    return { cx: c.x, cy: c.y, radius: boundingRadius(s.points, c) };
+  });
+}
+
+function splitPolygon(poly, line) {
+  const eps = 1e-7;
+  const left = [], right = [];
+  const n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const curr = poly[i];
+    const next = poly[(i + 1) % n];
+    const dCurr = line.a * curr.x + line.b * curr.y + line.c;
+    const dNext = line.a * next.x + line.b * next.y + line.c;
+    if (dCurr >= -eps) left.push({ x: curr.x, y: curr.y });
+    if (dCurr <= eps) right.push({ x: curr.x, y: curr.y });
+    if ((dCurr > eps && dNext < -eps) || (dCurr < -eps && dNext > eps)) {
+      const t = dCurr / (dCurr - dNext);
+      const inter = {
+        x: curr.x + t * (next.x - curr.x),
+        y: curr.y + t * (next.y - curr.y)
+      };
+      left.push({ x: inter.x, y: inter.y });
+      right.push({ x: inter.x, y: inter.y });
+    }
+  }
+  if (left.length < 3 || right.length < 3) return null;
+  return [left, right];
+}
+
+// World coords visible through current camera
+function visibleRect() {
+  const halfW = (W / 2) / camera.scale;
+  const halfH = (H / 2) / camera.scale;
+  return {
+    x0: camera.cx - halfW,
+    y0: camera.cy - halfH,
+    x1: camera.cx + halfW,
+    y1: camera.cy + halfH,
+  };
+}
+
+function makeRandomCutLineThrough(targetShape) {
+  if (!targetShape) return null;
+  const c = finalCentroid(targetShape);
+  const angle = Math.random() * Math.PI * 2;
+  const dx = Math.cos(angle), dy = Math.sin(angle);
+  const v = visibleRect();
+  const ts = [];
+  if (Math.abs(dx) > 1e-9) { ts.push((v.x0 - c.x) / dx); ts.push((v.x1 - c.x) / dx); }
+  if (Math.abs(dy) > 1e-9) { ts.push((v.y0 - c.y) / dy); ts.push((v.y1 - c.y) / dy); }
+  const valid = ts.filter(t => {
+    const x = c.x + t * dx, y = c.y + t * dy;
+    return x >= v.x0 - 0.5 && x <= v.x1 + 0.5 && y >= v.y0 - 0.5 && y <= v.y1 + 0.5;
+  }).sort((u, w) => u - w);
+  if (valid.length < 2) return null;
+  const t1 = valid[0], t2 = valid[valid.length - 1];
+  const p1 = { x: c.x + t1 * dx, y: c.y + t1 * dy };
+  const p2 = { x: c.x + t2 * dx, y: c.y + t2 * dy };
+  const na = -dy, nb = dx;
+  const cc = -(na * c.x + nb * c.y);
+  return { a: na, b: nb, c: cc, p1, p2 };
+}
+
+// ---------- SAT collision ----------
+function getAxes(pts) {
+  const axes = [];
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const p1 = pts[i], p2 = pts[(i + 1) % n];
+    const ex = p2.x - p1.x, ey = p2.y - p1.y;
+    const len = Math.hypot(ex, ey) || 1;
+    axes.push({ x: -ey / len, y: ex / len });
+  }
+  return axes;
+}
+function projectOnto(pts, ax) {
+  let mn = Infinity, mx = -Infinity;
+  for (const p of pts) {
+    const d = p.x * ax.x + p.y * ax.y;
+    if (d < mn) mn = d;
+    if (d > mx) mx = d;
+  }
+  return [mn, mx];
+}
+function mtv(polyA, polyB) {
+  const axes = getAxes(polyA).concat(getAxes(polyB));
+  let minOverlap = Infinity, axis = null;
+  for (const ax of axes) {
+    const [a1, a2] = projectOnto(polyA, ax);
+    const [b1, b2] = projectOnto(polyB, ax);
+    const o = Math.min(a2, b2) - Math.max(a1, b1);
+    if (o <= 0.5) return null;
+    if (o < minOverlap) { minOverlap = o; axis = ax; }
+  }
+  const ca = centroid(polyA), cb = centroid(polyB);
+  if ((ca.x - cb.x) * axis.x + (ca.y - cb.y) * axis.y < 0) {
+    axis = { x: -axis.x, y: -axis.y };
+  }
+  return { x: axis.x * minOverlap, y: axis.y * minOverlap };
+}
+
+// ---------- easings ----------
+function elasticOut(t) {
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  const c4 = (2 * Math.PI) / 3;
+  return Math.pow(2, -settings.elasticity * t) * Math.sin((t * 10 - 0.75) * c4) + 1;
+}
+function easeInOut(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// ---------- camera ----------
+function animateCamera(target, duration, onDone) {
+  cameraAnim = { from: { ...camera }, to: target, t: 0, duration, onDone };
+}
+function updateCamera(dt) {
+  if (!cameraAnim) return;
+  cameraAnim.t = Math.min(1, cameraAnim.t + dt / cameraAnim.duration);
+  const e = easeInOut(cameraAnim.t);
+  camera.cx = cameraAnim.from.cx + (cameraAnim.to.cx - cameraAnim.from.cx) * e;
+  camera.cy = cameraAnim.from.cy + (cameraAnim.to.cy - cameraAnim.from.cy) * e;
+  camera.scale = cameraAnim.from.scale + (cameraAnim.to.scale - cameraAnim.from.scale) * e;
+  if (cameraAnim.t >= 1) {
+    const cb = cameraAnim.onDone;
+    cameraAnim = null;
+    if (cb) cb();
+  }
+}
+
+// ---------- zone-based selection ----------
+function shapesInZone(zone, extra = ZONE_TOLERANCE) {
+  return shapes.filter(s => {
+    if (area(s.points) < MIN_AREA) return false;
+    const c = finalCentroid(s);
+    return Math.hypot(c.x - zone.cx, c.y - zone.cy) <= zone.radius + extra;
+  });
+}
+
+function pickZoneWithCuttableShapes() {
+  const candidates = zones.filter(z => shapesInZone(z).length > 0);
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function pickShapeInZone(zone) {
+  const candidates = shapesInZone(zone);
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+function cameraForZone(zone) {
+  const padding = settings.camPadding;
+  const candidates = shapesInZone(zone, padding);
+  let x0, y0, x1, y1;
+  if (candidates.length > 0) {
+    x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
+    for (const s of candidates) {
+      const c = finalCentroid(s);
+      const r = boundingRadius(s.points, centroid(s.points));
+      x0 = Math.min(x0, c.x - r); y0 = Math.min(y0, c.y - r);
+      x1 = Math.max(x1, c.x + r); y1 = Math.max(y1, c.y + r);
+    }
+  } else {
+    x0 = zone.cx - zone.radius; y0 = zone.cy - zone.radius;
+    x1 = zone.cx + zone.radius; y1 = zone.cy + zone.radius;
+  }
+  const w = (x1 - x0) + 2 * padding;
+  const h = (y1 - y0) + 2 * padding;
+  const scale = Math.min(W / w, H / h, settings.camMaxZoom);
+  return {
+    cx: (x0 + x1) / 2,
+    cy: (y0 + y1) / 2,
+    scale: Math.max(scale, 1),
+  };
+}
+
+// ---------- cut state ----------
+function startCutOnShape(targetShape) {
+  const line = makeRandomCutLineThrough(targetShape);
+  if (!line) return false;
+  const lineColor = `hsl(${Math.random() * 360}, 80%, 50%)`;
+  cutState = { phase: 'draw', t: 0, line, lineColor, lineColorRGB: parseHSL(lineColor) };
+  return true;
+}
+
+function finalizeAnim(s) {
+  if (!s.anim) return;
+  for (const p of s.points) {
+    p.x += s.anim.targetDx;
+    p.y += s.anim.targetDy;
+  }
+  s.anim = null;
+}
+
+function pickK(arr, k) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.slice(0, k);
+}
+
+function applyCut(line) {
+  for (const s of shapes) finalizeAnim(s);
+  const items = [];
+  for (const s of shapes) {
+    if (area(s.points) < MIN_AREA) {
+      items.push({ basePoints: s.points, color: s.color, fade: s.fade || null,
+        dx: 0, dy: 0, spin: 0, isCut: false });
+      continue;
+    }
+    const result = splitPolygon(s.points, line);
+    if (!result) {
+      items.push({ basePoints: s.points, color: s.color, fade: s.fade || null,
+        dx: 0, dy: 0, spin: 0, isCut: false });
+      continue;
+    }
+    const [a, b] = result;
+    const sepMin = settings.separation * 0.25;
+    const sep = sepMin + Math.random() * (settings.separation - sepMin);
+    const ca = centroid(a);
+    const sideA = line.a * ca.x + line.b * ca.y + line.c;
+    const dir = sideA >= 0 ? 1 : -1;
+    const spin = (0.1 + Math.random() * 0.2) * (Math.random() < 0.5 ? 1 : -1);
+    const fadeA = s.fade ? { ...s.fade } : null;
+    const fadeB = s.fade ? { ...s.fade } : null;
+    items.push({ basePoints: a, color: s.color, fade: fadeA,
+      dx: dir * line.a * sep, dy: dir * line.b * sep, spin, isCut: true });
+    items.push({ basePoints: b, color: s.color, fade: fadeB,
+      dx: -dir * line.a * sep, dy: -dir * line.b * sep, spin: -spin, isCut: true });
+  }
+  const targets = items.map(it => it.basePoints.map(p => ({ x: p.x + it.dx, y: p.y + it.dy })));
+  const MAX_ITER = 40;
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    let any = false;
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const v = mtv(targets[i], targets[j]);
+        if (!v) continue;
+        any = true;
+        const hx = v.x * 0.5, hy = v.y * 0.5;
+        items[i].dx += hx; items[i].dy += hy;
+        items[j].dx -= hx; items[j].dy -= hy;
+        for (const p of targets[i]) { p.x += hx; p.y += hy; }
+        for (const p of targets[j]) { p.x -= hx; p.y -= hy; }
+      }
+    }
+    if (!any) break;
+  }
+  const next = [];
+  const newCutIndices = [];
+  for (const item of items) {
+    const moves = item.isCut || Math.abs(item.dx) > 0.5 || Math.abs(item.dy) > 0.5 || item.spin !== 0;
+    const shape = { points: item.basePoints, color: item.color, fade: item.fade };
+    if (moves) {
+      const c = centroid(item.basePoints);
+      shape.anim = {
+        targetDx: item.dx, targetDy: item.dy,
+        startAngle: item.spin, pivot: c,
+        ox: 0, oy: 0, angle: item.spin,
+        t: 0, duration: settings.animDuration
+      };
+    }
+    next.push(shape);
+    if (item.isCut) newCutIndices.push(next.length - 1);
+  }
+  const k = Math.max(0, Math.min(settings.colorCount, newCutIndices.length));
+  const fadeSpan = Math.max(0, settings.fadeMax - settings.fadeMin);
+  for (const idx of pickK(newCutIndices, k)) {
+    next[idx].color = cutState.lineColor;
+    next[idx].fade = {
+      startRGB: cutState.lineColorRGB.slice(),
+      elapsed: 0,
+      duration: settings.fadeMin + Math.random() * fadeSpan
+    };
+  }
+  shapes = next;
+}
+
+function startPanOut() {
+  cinematicState.phase = 'panOut';
+  animateCamera(identityCamera(), settings.camPanDuration, () => {
+    cinematicState = null;
+    nextCutDelay = settings.camOverviewHold;
+  });
+}
+
+function scheduleNextCut() {
+  if (!settings.cinematic) {
+    // simple per-zone single cut, no camera motion
+    const zone = pickZoneWithCuttableShapes();
+    if (!zone) return;
+    const target = pickShapeInZone(zone);
+    if (target) startCutOnShape(target);
+    return;
+  }
+  // cinematic flow
+  if (!cinematicState) {
+    const zone = pickZoneWithCuttableShapes();
+    if (!zone) return;
+    cinematicState = {
+      phase: 'panIn',
+      zone,
+      cutsRemaining: Math.max(1, settings.camCuts),
+    };
+    animateCamera(cameraForZone(zone), settings.camPanDuration, () => {
+      cinematicState.phase = 'cutting';
+    });
+    return;
+  }
+  if (cinematicState.phase === 'cutting') {
+    if (cinematicState.cutsRemaining > 0) {
+      const target = pickShapeInZone(cinematicState.zone);
+      if (target && startCutOnShape(target)) {
+        cinematicState.cutsRemaining--;
+      } else {
+        startPanOut();
+      }
+    } else {
+      startPanOut();
+    }
+  }
+}
+
+// ---------- update / render ----------
+function update(dt) {
+  updateCamera(dt);
+  const nrgb = neutralRGB();
+  const neutralStr = settings.strokeColor;
+  for (const s of shapes) {
+    if (s.anim && s.anim.t < 1) {
+      s.anim.t = Math.min(1, s.anim.t + dt / s.anim.duration);
+      const e = elasticOut(s.anim.t);
+      s.anim.ox = s.anim.targetDx * e;
+      s.anim.oy = s.anim.targetDy * e;
+      s.anim.angle = s.anim.startAngle * (1 - e);
+      if (s.anim.t >= 1) {
+        for (const p of s.points) {
+          p.x += s.anim.targetDx;
+          p.y += s.anim.targetDy;
+        }
+        s.anim = null;
+      }
+    }
+    if (s.fade) {
+      s.fade.elapsed += dt;
+      const t = Math.min(1, s.fade.elapsed / s.fade.duration);
+      const r = s.fade.startRGB[0] + (nrgb[0] - s.fade.startRGB[0]) * t;
+      const g = s.fade.startRGB[1] + (nrgb[1] - s.fade.startRGB[1]) * t;
+      const b = s.fade.startRGB[2] + (nrgb[2] - s.fade.startRGB[2]) * t;
+      s.color = `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+      if (t >= 1) { s.color = neutralStr; s.fade = null; }
+    } else {
+      s.color = neutralStr;
+    }
+  }
+  if (cutState) {
+    cutState.t += dt;
+    if (cutState.phase === 'draw' && cutState.t >= settings.lineSpeed) {
+      cutState.phase = 'split'; cutState.t = 0;
+      applyCut(cutState.line);
+    } else if (cutState.phase === 'split' && cutState.t >= SPLIT_PHASE) {
+      cutState.phase = 'fade'; cutState.t = 0;
+    } else if (cutState.phase === 'fade' && cutState.t >= settings.lineSpeed) {
+      cutState.phase = 'pause'; cutState.t = 0;
+    } else if (cutState.phase === 'pause' && cutState.t >= PAUSE_PHASE) {
+      cutState = null;
+    }
+  }
+  if (!cutState && !cameraAnim) {
+    if (nextCutDelay > 0) {
+      nextCutDelay -= dt;
+    } else {
+      scheduleNextCut();
+    }
+  }
+}
+
+function applyStrokeStyle() {
+  const style = settings.strokeStyle;
+  if (style === 'dashed') ctx.setLineDash([12, 8]);
+  else if (style === 'dotted') ctx.setLineDash([2, 6]);
+  else ctx.setLineDash([]);
+}
+
+function drawShape(s) {
+  const pts = s.points;
+  const n = pts.length;
+  ctx.save();
+  if (s.anim) {
+    const { pivot, ox, oy, angle } = s.anim;
+    ctx.translate(pivot.x + ox, pivot.y + oy);
+    ctx.rotate(angle);
+    ctx.translate(-pivot.x, -pivot.y);
+  }
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < n; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = s.color;
+  ctx.lineWidth = settings.strokeWidth;
+  applyStrokeStyle();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (settings.strokeStyle === 'rivets') {
+    ctx.fillStyle = '#5c5c5c';
+    for (let i = 0; i < n; i++) {
+      const p1 = pts[i], p2 = pts[(i + 1) % n];
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < DOT_SPACING * 1.2) continue;
+      const count = Math.max(1, Math.floor(len / DOT_SPACING));
+      for (let k = 1; k < count; k++) {
+        const t = k / count;
+        const x = p1.x + dx * t;
+        const y = p1.y + dy * t;
+        ctx.beginPath();
+        ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawCutLine() {
+  if (!cutState) return;
+  const { line, phase, t, lineColor } = cutState;
+  const { p1, p2 } = line;
+  let alpha = 1, progress = 1;
+  if (phase === 'draw') progress = t / settings.lineSpeed;
+  else if (phase === 'fade') alpha = 1 - t / settings.lineSpeed;
+  else if (phase === 'pause') alpha = 0;
+  const ex = p1.x + (p2.x - p1.x) * progress;
+  const ey = p1.y + (p2.y - p1.y) * progress;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 2.5 / camera.scale;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.scale(camera.scale, camera.scale);
+  ctx.translate(-camera.cx, -camera.cy);
+  for (const s of shapes) drawShape(s);
+  drawCutLine();
+  ctx.restore();
+}
+
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min(50, now - lastTime);
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+function reset() {
+  shapes = generateInitialShapes(settings.shapeCount);
+  zones = buildZones(shapes);
+  cutState = null;
+  cinematicState = null;
+  cameraAnim = null;
+  camera = identityCamera();
+  nextCutDelay = FIRST_CUT_DELAY;
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === ' ' || e.key === 'r' || e.key === 'R') { e.preventDefault(); reset(); }
+});
+canvas.addEventListener('click', reset);
+
+// ---------- panel wiring ----------
+function fmtMs(v) { return v + 'ms'; }
+function fmtPx(v) { return v + 'px'; }
+function fmtSec(v) { return (v / 1000).toFixed(1) + 's'; }
+function fmtNum(v) { return String(v); }
+function fmtFloat(v) { return v.toFixed(1); }
+
+function bindRange(id, key, fmt, onChange) {
+  const el = document.getElementById(id);
+  const val = document.getElementById('v_' + id.slice(2));
+  el.value = settings[key];
+  if (val) val.textContent = fmt(settings[key]);
+  el.addEventListener('input', () => {
+    settings[key] = +el.value;
+    if (val) val.textContent = fmt(settings[key]);
+    if (onChange) onChange();
+  });
+}
+function bindColor(id, key, onChange) {
+  const el = document.getElementById(id);
+  el.value = settings[key];
+  el.addEventListener('input', () => {
+    settings[key] = el.value;
+    if (onChange) onChange();
+  });
+}
+function bindSelect(id, key, onChange) {
+  const el = document.getElementById(id);
+  el.value = settings[key];
+  el.addEventListener('change', () => {
+    settings[key] = el.value;
+    if (onChange) onChange();
+  });
+}
+function bindCheckbox(id, key, onChange) {
+  const el = document.getElementById(id);
+  el.checked = settings[key];
+  el.addEventListener('change', () => {
+    settings[key] = el.checked;
+    if (onChange) onChange();
+  });
+}
+
+function applyBg() { document.body.style.background = settings.bgColor; }
+
+function applyCamMode() {
+  document.body.classList.toggle('no-cam', !settings.cinematic);
+}
+
+bindRange('p_count',          'shapeCount',     fmtNum);
+bindCheckbox('p_cinematic',   'cinematic',      () => {
+  applyCamMode();
+  cinematicState = null;
+  if (!settings.cinematic && (camera.scale !== 1 || camera.cx !== W/2 || camera.cy !== H/2)) {
+    animateCamera(identityCamera(), 600);
+  }
+});
+bindRange('p_camPadding',     'camPadding',     fmtPx);
+bindRange('p_camMaxZoom',     'camMaxZoom',     fmtFloat);
+bindRange('p_camPanDuration', 'camPanDuration', fmtMs);
+bindRange('p_camCuts',        'camCuts',        fmtNum);
+bindRange('p_camOverviewHold','camOverviewHold',fmtMs);
+bindRange('p_lineSpeed',      'lineSpeed',      fmtMs);
+bindRange('p_animDur',        'animDuration',   fmtMs);
+bindRange('p_elasticity',     'elasticity',     fmtFloat);
+bindRange('p_separation',     'separation',     fmtPx);
+bindRange('p_colorCount',     'colorCount',     fmtNum);
+bindRange('p_fadeMin',        'fadeMin',        fmtSec, () => {
+  if (settings.fadeMax < settings.fadeMin) {
+    settings.fadeMax = settings.fadeMin;
+    const el = document.getElementById('p_fadeMax');
+    const val = document.getElementById('v_fadeMax');
+    el.value = settings.fadeMax;
+    val.textContent = fmtSec(settings.fadeMax);
+  }
+});
+bindRange('p_fadeMax',        'fadeMax',        fmtSec, () => {
+  if (settings.fadeMin > settings.fadeMax) {
+    settings.fadeMin = settings.fadeMax;
+    const el = document.getElementById('p_fadeMin');
+    const val = document.getElementById('v_fadeMin');
+    el.value = settings.fadeMin;
+    val.textContent = fmtSec(settings.fadeMin);
+  }
+});
+bindColor('p_bg',             'bgColor',        applyBg);
+bindColor('p_stroke',         'strokeColor');
+bindRange('p_strokeWidth',    'strokeWidth',    fmtPx);
+bindSelect('p_strokeStyle',   'strokeStyle');
+
+document.getElementById('toggleBtn').addEventListener('click', () => {
+  const p = document.getElementById('panel');
+  p.hidden = !p.hidden;
+});
+document.getElementById('resetBtn').addEventListener('click', reset);
+
+applyBg();
+applyCamMode();
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
