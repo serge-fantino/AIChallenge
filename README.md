@@ -7,7 +7,7 @@ clusters of shapes.
 
 Inspired from https://www.instagram.com/reel/DXw9aQ3p6Tl/?igsh=MW44MXN1cXRyY28zdQ==
 
-Demo here: https://github.com/serge-fantino/AIChallenge
+Demo here: https://serge-fantino.github.io/AIChallenge/ 
 
 ## The challenge
 
