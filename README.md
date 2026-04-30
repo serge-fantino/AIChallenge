@@ -5,6 +5,8 @@ geometric shapes into pieces, with elastic impact animations, collision-aware
 separation, color fading, and an optional cinematic camera that zooms onto
 clusters of shapes.
 
+Inspired from https://www.instagram.com/reel/DXw9aQ3p6Tl/?igsh=MW44MXN1cXRyY28zdQ==
+
 ## The challenge
 
 > On a blank page, show a few simple geometric shapes (circles, triangles,
