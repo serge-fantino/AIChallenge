@@ -60,6 +60,26 @@
     .panel button.action { flex: 1; }
     .panel button.action.secondary { background: rgba(0,0,0,0.12); color: #1a1a1a; }
     .panel button.action.secondary:hover { background: rgba(0,0,0,0.22); }
+    .hud {
+      position: fixed; bottom: 12px; right: 12px;
+      font: 12px ui-monospace, Menlo, Consolas, monospace;
+      background: rgba(255,255,255,0.5);
+      padding: 6px 10px;
+      border-radius: 6px;
+      color: #222;
+      pointer-events: none;
+      user-select: none;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 50;
+      min-width: 110px;
+    }
+    .hud-row { display: flex; justify-content: space-between; gap: 14px; }
+    .hud-label { color: #666; }
+    .hud-value { font-variant-numeric: tabular-nums; color: #1a1a1a; }
+    .hud-value.warn { color: #b56500; }
+    .hud-value.bad  { color: #c43c3c; }
+    body.panel-open .hud { display: none; }
     .panel .repo { margin-top: 14px; text-align: center; font-size: 12px; color: #555; }
     .panel .repo a { color: #1a4f8c; text-decoration: none; }
     .panel .repo a:hover { text-decoration: underline; }
@@ -70,6 +90,11 @@
 <body>
   <canvas id="canvas"></canvas>
   <div class="hint">click / espace = recommencer</div>
+  <div class="hud" id="hud">
+    <div class="hud-row"><span class="hud-label">Pièces</span><span class="hud-value" id="hud_count">0</span></div>
+    <div class="hud-row"><span class="hud-label">Perf</span><span class="hud-value" id="hud_fps">—</span></div>
+    <div class="hud-row"><span class="hud-label">Charge</span><span class="hud-value" id="hud_deg">—</span></div>
+  </div>
   <button class="toggle" id="toggleBtn" title="Réglages">⚙</button>
   <div class="panel" id="panel" hidden>
     <h2>Setup</h2>
@@ -522,8 +547,21 @@ function boundingRadius(pts, c) {
   }
   return r;
 }
+// Centroid / bounding radius caches: cleared on bake (when points shift, the
+// cached centroid is updated in place; bounding radius is shape-invariant
+// under uniform translation).
+function getCentroid(s) {
+  if (!s._centroid) s._centroid = centroid(s.points);
+  return s._centroid;
+}
+function getBoundingRadius(s) {
+  if (s._boundingRadius == null) {
+    s._boundingRadius = boundingRadius(s.points, getCentroid(s));
+  }
+  return s._boundingRadius;
+}
 function finalCentroid(s) {
-  const c = centroid(s.points);
+  const c = getCentroid(s);
   if (s.anim) return { x: c.x + s.anim.targetDx, y: c.y + s.anim.targetDy };
   return c;
 }
@@ -711,73 +749,72 @@ function easeInOut(t) {
 }
 
 // ---------- per-point animation modes ----------
-function rigidPointPos(p, anim) {
+// All variants write into the provided `out` object ({x, y}) instead of
+// allocating, which matters at 60 fps with many animating points.
+function rigidPointInto(p, anim, out) {
   const e = elasticOut(anim.t);
   const ox = anim.targetDx * e;
   const oy = anim.targetDy * e;
   const angle = anim.startAngle * (1 - e);
-  if (angle === 0) return { x: p.x + ox, y: p.y + oy };
+  if (angle === 0) {
+    out.x = p.x + ox; out.y = p.y + oy;
+    return;
+  }
   const cosA = Math.cos(angle), sinA = Math.sin(angle);
   const dx = p.x - anim.pivot.x;
   const dy = p.y - anim.pivot.y;
-  return {
-    x: anim.pivot.x + ox + dx * cosA - dy * sinA,
-    y: anim.pivot.y + oy + dx * sinA + dy * cosA,
-  };
+  out.x = anim.pivot.x + ox + dx * cosA - dy * sinA;
+  out.y = anim.pivot.y + oy + dx * sinA + dy * cosA;
 }
 
-function delayedPos(p, anim, relDist) {
+function delayedInto(p, anim, relDist, out) {
   const startT = relDist * anim.spread;
   const denom = 1 - startT;
   const localT = denom > 0
     ? Math.max(0, Math.min(1, (anim.t - startT) / denom))
     : (anim.t >= startT ? 1 : 0);
   const e = elasticOut(localT);
-  return { x: p.x + anim.targetDx * e, y: p.y + anim.targetDy * e };
+  out.x = p.x + anim.targetDx * e;
+  out.y = p.y + anim.targetDy * e;
 }
 
-function jellyPointPos(p, anim) {
-  // delay by distance to cut line: points near the line move first
+function jellyInto(p, anim, out) {
   const d = Math.abs(anim.line.a * p.x + anim.line.b * p.y + anim.line.c);
   const rel = anim.maxDist > 0 ? d / anim.maxDist : 0;
-  return delayedPos(p, anim, rel);
+  delayedInto(p, anim, rel, out);
 }
 
-function wavePointPos(p, anim) {
-  // wave propagates from one end of the cut to the other
+function waveInto(p, anim, out) {
   const dx = p.x - anim.pivot.x, dy = p.y - anim.pivot.y;
   const tDot = dx * (-anim.line.b) + dy * anim.line.a;
   const range = anim.maxAlong - anim.minAlong;
   const rel = range > 0 ? (tDot - anim.minAlong) / range : 0;
-  return delayedPos(p, anim, rel);
+  delayedInto(p, anim, rel, out);
 }
 
-function squashPointPos(p, anim) {
-  // rigid translate + non-uniform scale wobble around pivot
+function squashInto(p, anim, out) {
   const e = elasticOut(anim.t);
   const ox = anim.targetDx * e;
   const oy = anim.targetDy * e;
   const pulse = anim.t < 0.6 ? Math.sin((anim.t / 0.6) * Math.PI) : 0;
-  const stretch = 1 + 0.45 * pulse;  // along motion (cut normal)
-  const squeeze = 1 - 0.22 * pulse;  // perpendicular (along cut)
+  const stretch = 1 + 0.45 * pulse;
+  const squeeze = 1 - 0.22 * pulse;
   const cx = anim.pivot.x, cy = anim.pivot.y;
   const dx = p.x - cx, dy = p.y - cy;
   const nDot = dx * anim.line.a + dy * anim.line.b;
   const tDot = dx * (-anim.line.b) + dy * anim.line.a;
   const nNew = nDot * stretch;
   const tNew = tDot * squeeze;
-  return {
-    x: cx + ox + nNew * anim.line.a - tNew * anim.line.b,
-    y: cy + oy + nNew * anim.line.b + tNew * anim.line.a,
-  };
+  out.x = cx + ox + nNew * anim.line.a - tNew * anim.line.b;
+  out.y = cy + oy + nNew * anim.line.b + tNew * anim.line.a;
 }
 
-function animatedPoint(p, anim) {
+function animatedPointInto(p, anim, out) {
   switch (anim.mode) {
-    case 'jelly':  return jellyPointPos(p, anim);
-    case 'wave':   return wavePointPos(p, anim);
-    case 'squash': return squashPointPos(p, anim);
-    default:       return rigidPointPos(p, anim);
+    case 'jelly':  jellyInto(p, anim, out); break;
+    case 'wave':   waveInto(p, anim, out); break;
+    case 'squash': squashInto(p, anim, out); break;
+    default:       rigidPointInto(p, anim, out); break;
   }
 }
 
@@ -820,8 +857,7 @@ function pickShapeInZone(zone) {
 
 function cameraForShape(s) {
   const c = finalCentroid(s);
-  const baseC = centroid(s.points);
-  const r = boundingRadius(s.points, baseC);
+  const r = getBoundingRadius(s);
   // padding interpreted as screen pixels so it stays consistent at high zoom
   const screenPad = settings.camPadding;
   const sX = (W - 2 * screenPad) / (2 * r);
@@ -876,7 +912,7 @@ function cameraForZone(zone) {
     x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
     for (const s of candidates) {
       const c = finalCentroid(s);
-      const r = boundingRadius(s.points, centroid(s.points));
+      const r = getBoundingRadius(s);
       x0 = Math.min(x0, c.x - r); y0 = Math.min(y0, c.y - r);
       x1 = Math.max(x1, c.x + r); y1 = Math.max(y1, c.y + r);
     }
@@ -956,19 +992,41 @@ function applyCut(line) {
       dx: -dir * line.a * sep, dy: -dir * line.b * sep, spin: -spin, isCut: true });
   }
   const targets = items.map(it => it.basePoints.map(p => ({ x: p.x + it.dx, y: p.y + it.dy })));
+  // AABB broad-phase: per-item bounding box, updated incrementally on push
+  const N = items.length;
+  const ax0 = new Float64Array(N), ay0 = new Float64Array(N);
+  const ax1 = new Float64Array(N), ay1 = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const pts = targets[i];
+    for (let k = 0; k < pts.length; k++) {
+      const p = pts[k];
+      if (p.x < x0) x0 = p.x;
+      if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y;
+      if (p.y > y1) y1 = p.y;
+    }
+    ax0[i] = x0; ay0[i] = y0; ax1[i] = x1; ay1[i] = y1;
+  }
   const MAX_ITER = 40;
   for (let iter = 0; iter < MAX_ITER; iter++) {
     let any = false;
-    for (let i = 0; i < items.length; i++) {
-      for (let j = i + 1; j < items.length; j++) {
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        // broad-phase reject
+        if (ax1[i] < ax0[j] || ax1[j] < ax0[i] ||
+            ay1[i] < ay0[j] || ay1[j] < ay0[i]) continue;
         const v = mtv(targets[i], targets[j]);
         if (!v) continue;
         any = true;
         const hx = v.x * 0.5, hy = v.y * 0.5;
         items[i].dx += hx; items[i].dy += hy;
         items[j].dx -= hx; items[j].dy -= hy;
-        for (const p of targets[i]) { p.x += hx; p.y += hy; }
-        for (const p of targets[j]) { p.x -= hx; p.y -= hy; }
+        const ti = targets[i], tj = targets[j];
+        for (let k = 0; k < ti.length; k++) { ti[k].x += hx; ti[k].y += hy; }
+        for (let k = 0; k < tj.length; k++) { tj[k].x -= hx; tj[k].y -= hy; }
+        ax0[i] += hx; ax1[i] += hx; ay0[i] += hy; ay1[i] += hy;
+        ax0[j] -= hx; ax1[j] -= hx; ay0[j] -= hy; ay1[j] -= hy;
       }
     }
     if (!any) break;
@@ -1118,10 +1176,13 @@ function update(dt) {
     if (s.anim && s.anim.t < 1) {
       s.anim.t = Math.min(1, s.anim.t + dt / s.anim.duration);
       if (s.anim.t >= 1) {
+        const dx = s.anim.targetDx, dy = s.anim.targetDy;
         for (const p of s.points) {
-          p.x += s.anim.targetDx;
-          p.y += s.anim.targetDy;
+          p.x += dx;
+          p.y += dy;
         }
+        if (s._centroid) { s._centroid.x += dx; s._centroid.y += dy; }
+        // _boundingRadius unchanged under uniform translation
         s.anim = null;
       }
     }
@@ -1167,12 +1228,28 @@ function applyStrokeStyle() {
   else ctx.setLineDash([]);
 }
 
+// Reusable buffer of {x, y} for visible polygon points; resized on demand.
+const visBuf = [];
+function ensureVisBuf(n) {
+  while (visBuf.length < n) visBuf.push({ x: 0, y: 0 });
+}
+
 function drawShape(s) {
-  const pts = s.anim ? s.points.map(p => animatedPoint(p, s.anim)) : s.points;
+  const pts = s.points;
   const n = pts.length;
+  const anim = s.anim;
+  ensureVisBuf(n);
+  if (anim) {
+    for (let i = 0; i < n; i++) animatedPointInto(pts[i], anim, visBuf[i]);
+  } else {
+    for (let i = 0; i < n; i++) {
+      visBuf[i].x = pts[i].x; visBuf[i].y = pts[i].y;
+    }
+  }
+  // outline
   ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < n; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.moveTo(visBuf[0].x, visBuf[0].y);
+  for (let i = 1; i < n; i++) ctx.lineTo(visBuf[i].x, visBuf[i].y);
   ctx.closePath();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -1181,12 +1258,14 @@ function drawShape(s) {
   applyStrokeStyle();
   ctx.stroke();
   ctx.setLineDash([]);
+  // rivets — single beginPath/fill per shape
   if (settings.strokeStyle === 'rivets') {
     ctx.fillStyle = '#5c5c5c';
     const spacing = DOT_SPACING / camera.scale;
     const r = 1.2 / camera.scale;
+    ctx.beginPath();
     for (let i = 0; i < n; i++) {
-      const p1 = pts[i], p2 = pts[(i + 1) % n];
+      const p1 = visBuf[i], p2 = visBuf[(i + 1) % n];
       const dx = p2.x - p1.x, dy = p2.y - p1.y;
       const len = Math.hypot(dx, dy);
       if (len < spacing * 1.2) continue;
@@ -1195,11 +1274,11 @@ function drawShape(s) {
         const t = k / count;
         const x = p1.x + dx * t;
         const y = p1.y + dy * t;
-        ctx.beginPath();
+        ctx.moveTo(x + r, y);
         ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
       }
     }
+    ctx.fill();
   }
 }
 
@@ -1249,23 +1328,80 @@ function drawCutLine() {
   ctx.restore();
 }
 
+function shapeIsVisible(s, v) {
+  const c = getCentroid(s);
+  let r = getBoundingRadius(s);
+  if (s.anim) r += Math.hypot(s.anim.targetDx, s.anim.targetDy);
+  return c.x + r >= v.x0 && c.x - r <= v.x1
+      && c.y + r >= v.y0 && c.y - r <= v.y1;
+}
+
 function render() {
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   ctx.translate(W / 2, H / 2);
   ctx.scale(camera.scale, camera.scale);
   ctx.translate(-camera.cx, -camera.cy);
-  for (const s of shapes) drawShape(s);
+  const v = visibleRect();
+  for (const s of shapes) {
+    if (!shapeIsVisible(s, v)) continue;
+    drawShape(s);
+  }
   drawCutLine();
   ctx.restore();
+}
+
+// ---------- perf stats / HUD ----------
+const perfStats = {
+  frameTimes: new Array(60).fill(16.6),
+  idx: 0,
+  filled: false,
+  bestFps: 0,
+};
+function recordFrame(ms) {
+  perfStats.frameTimes[perfStats.idx] = ms;
+  perfStats.idx = (perfStats.idx + 1) % perfStats.frameTimes.length;
+  if (perfStats.idx === 0) perfStats.filled = true;
+}
+const hudEls = {
+  count: null, fps: null, deg: null,
+};
+let hudTickCounter = 0;
+function updateHUD() {
+  hudTickCounter++;
+  if (hudTickCounter < 8) return; // ~7Hz refresh
+  hudTickCounter = 0;
+  if (!hudEls.count) {
+    hudEls.count = document.getElementById('hud_count');
+    hudEls.fps   = document.getElementById('hud_fps');
+    hudEls.deg   = document.getElementById('hud_deg');
+  }
+  const ft = perfStats.frameTimes;
+  let sum = 0;
+  for (let i = 0; i < ft.length; i++) sum += ft[i];
+  const avgMs = sum / ft.length;
+  const fps = 1000 / avgMs;
+  if (perfStats.filled && fps > perfStats.bestFps) perfStats.bestFps = fps;
+  const ratio = perfStats.bestFps > 0 ? fps / perfStats.bestFps : 1;
+  hudEls.count.textContent = String(shapes.length);
+  hudEls.fps.textContent = fps.toFixed(0) + ' fps · ' + avgMs.toFixed(1) + 'ms';
+  hudEls.deg.textContent = perfStats.bestFps > 0 && perfStats.filled
+    ? Math.round(ratio * 100) + '%'
+    : '—';
+  hudEls.fps.className = 'hud-value';
+  hudEls.deg.className = 'hud-value';
+  if (ratio < 0.5)      { hudEls.fps.classList.add('bad');  hudEls.deg.classList.add('bad'); }
+  else if (ratio < 0.8) { hudEls.fps.classList.add('warn'); hudEls.deg.classList.add('warn'); }
 }
 
 let lastTime = performance.now();
 function loop(now) {
   const dt = Math.min(50, now - lastTime);
   lastTime = now;
+  recordFrame(dt);
   update(dt);
   render();
+  updateHUD();
   requestAnimationFrame(loop);
 }
 
@@ -1416,6 +1552,7 @@ bindRange('p_audioVolume',    'audioVolume',    fmtPct, () => audio.applyMasterV
 document.getElementById('toggleBtn').addEventListener('click', () => {
   const p = document.getElementById('panel');
   p.hidden = !p.hidden;
+  document.body.classList.toggle('panel-open', !p.hidden);
 });
 document.getElementById('resetBtn').addEventListener('click', reset);
 document.getElementById('resetSettingsBtn').addEventListener('click', resetSettings);

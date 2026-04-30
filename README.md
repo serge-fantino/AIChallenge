@@ -129,6 +129,41 @@ that builds on the original challenge with several layered features:
 | Son         | Activé            | master mute toggle                                     |
 | Son         | Volume            | master volume (0–100%)                                 |
 
+## Performance
+
+Cuts run in `O(N²)` for the SAT collision relaxation and rendering touches
+every visible polygon vertex every frame, so a few targeted optimizations
+keep things smooth as the piece count grows. A small HUD in the bottom
+right shows the current count and frame-rate so you can watch the
+degradation in real time.
+
+- **SAT broad-phase**: each item gets an axis-aligned bounding box (`Float64Array`s,
+  no objects) before the relaxation loop; pairs whose AABBs don't overlap
+  skip the expensive `mtv()` call. Bounding boxes are updated incrementally
+  after each push (uniform translation = same shift on the box). With ~100
+  pieces this typically replaces ~5000 SAT tests per iteration with 50–200,
+  giving ~20–50× speedup on the cut step.
+- **Cached centroid / bounding radius** per shape (`s._centroid`,
+  `s._boundingRadius`), lazily computed and reused by all the camera /
+  zone / framing helpers. Cleared/updated in place when the animation bakes
+  (translation only — bounding radius is invariant).
+- **Viewport culling**: each frame, shapes whose bounding circle (centroid
+  + radius + the magnitude of any in-flight animation translation) lies
+  entirely outside `visibleRect()` are skipped at render. Big win in zoom
+  mode, where most pieces are off-screen.
+- **Allocation-free per-point animation**: the per-mode functions
+  (`rigidPointInto`, `jellyInto`, `waveInto`, `squashInto`) write into a
+  caller-provided `out` object instead of returning a new `{x, y}`. The
+  drawing pipeline reuses a single shared buffer (`visBuf`), so animating
+  N shapes × P points per frame allocates nothing.
+- **Batched rivets**: the rivets along a polygon's perimeter are now drawn
+  in a single `beginPath` / `fill` per shape, with `moveTo` between each
+  arc to keep them disjoint. Cuts ~10× the number of fill draw calls.
+- **Performance HUD** (bottom right): pieces count, smoothed FPS + frame
+  time over the last 60 frames, and a "Charge" ratio of current FPS vs the
+  best FPS observed in the session. Goes orange below 80% of peak and red
+  below 50%.
+
 ## Run it
 
 Open `index.html` in any modern browser. No build step, no server.
