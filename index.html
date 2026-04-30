@@ -56,6 +56,9 @@
       background: rgba(20,20,20,0.85); color: #fff; border: none; border-radius: 6px;
       font: inherit; }
     .panel button.action:hover { background: rgba(40,40,40,0.95); }
+    .panel .repo { margin-top: 14px; text-align: center; font-size: 12px; color: #555; }
+    .panel .repo a { color: #1a4f8c; text-decoration: none; }
+    .panel .repo a:hover { text-decoration: underline; }
     .cam-only { transition: opacity 0.15s; }
     body.no-cam .cam-only { display: none; }
   </style>
@@ -163,6 +166,9 @@
     </div>
     <div class="actions">
       <button class="action" id="resetBtn">Recommencer</button>
+    </div>
+    <div class="repo">
+      <a href="https://github.com/serge-fantino/AIChallenge" target="_blank" rel="noopener">github.com/serge-fantino/AIChallenge</a>
     </div>
   </div>
 <script>

@@ -7,6 +7,8 @@ clusters of shapes.
 
 Inspired from https://www.instagram.com/reel/DXw9aQ3p6Tl/?igsh=MW44MXN1cXRyY28zdQ==
 
+Demo here: https://github.com/serge-fantino/AIChallenge
+
 ## The challenge
 
 > On a blank page, show a few simple geometric shapes (circles, triangles,
