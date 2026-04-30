@@ -212,6 +212,16 @@
         <option value="dotted">Pointillés</option>
       </select>
     </div>
+    <h2>Son</h2>
+    <div class="row">
+      <label>Activé</label>
+      <input type="checkbox" id="p_audioOn">
+    </div>
+    <div class="row">
+      <label>Volume</label>
+      <input type="range" id="p_audioVolume" min="0" max="1" step="0.05">
+      <span class="val" id="v_audioVolume"></span>
+    </div>
     <div class="actions">
       <button class="action" id="resetBtn">Recommencer</button>
       <button class="action secondary" id="resetSettingsBtn">Défauts</button>
@@ -247,6 +257,8 @@ const defaultSettings = {
   strokeColor: '#9a9a9a',
   strokeWidth: 5,
   strokeStyle: 'rivets',
+  audioOn: true,
+  audioVolume: 0.4,
 };
 const settings = { ...defaultSettings };
 
@@ -266,6 +278,161 @@ function saveSettings() {
   catch (e) { /* ignore quota / disabled storage */ }
 }
 loadSettings();
+
+// ---------- audio ----------
+const audio = {
+  ctx: null,
+  master: null,
+  windNode: null,
+  windGain: null,
+
+  init() {
+    if (this.ctx) return;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      this.ctx = new Ctx();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = settings.audioOn ? settings.audioVolume : 0;
+      this.master.connect(this.ctx.destination);
+    } catch (e) { /* audio unsupported */ }
+  },
+
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+
+  applyMasterVolume() {
+    if (!this.master) return;
+    this.master.gain.value = settings.audioOn ? settings.audioVolume : 0;
+  },
+
+  makeNoise(durationSec) {
+    const ctx = this.ctx;
+    const len = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    return buf;
+  },
+
+  laser() {
+    if (!settings.audioOn || !this.ctx) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const dur = 0.18;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1800, now);
+    osc.frequency.exponentialRampToValueAtTime(180, now + dur);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(4000, now);
+    lp.frequency.exponentialRampToValueAtTime(800, now + dur);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.45, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+    osc.connect(lp); lp.connect(gain); gain.connect(this.master);
+    osc.start(now);
+    osc.stop(now + dur + 0.02);
+  },
+
+  shatter() {
+    if (!settings.audioOn || !this.ctx) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    // 1) low-mid impact: short bandpass noise burst
+    const impactDur = 0.06;
+    const impact = ctx.createBufferSource();
+    impact.buffer = this.makeNoise(impactDur);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 400; bp.Q.value = 1;
+    const ig = ctx.createGain();
+    ig.gain.setValueAtTime(0.5, now);
+    ig.gain.exponentialRampToValueAtTime(0.001, now + impactDur);
+    impact.connect(bp); bp.connect(ig); ig.connect(this.master);
+    impact.start(now);
+    // 2) shatter tail: high-pass noise with slow decay
+    const tailDur = 0.35;
+    const tail = ctx.createBufferSource();
+    tail.buffer = this.makeNoise(tailDur);
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = 2200;
+    const tg = ctx.createGain();
+    tg.gain.setValueAtTime(0.35, now + 0.02);
+    tg.gain.exponentialRampToValueAtTime(0.001, now + tailDur);
+    tail.connect(hp); hp.connect(tg); tg.connect(this.master);
+    tail.start(now + 0.02);
+    // 3) a handful of high-pitched "tings" at random offsets
+    const tings = 4 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < tings; i++) {
+      const t = now + Math.random() * 0.18;
+      const freq = 1500 + Math.random() * 3500;
+      const o = ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.value = freq;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.13, t + 0.003);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.1 + Math.random() * 0.12);
+      o.connect(g); g.connect(this.master);
+      o.start(t);
+      o.stop(t + 0.28);
+    }
+  },
+
+  ensureWind(active) {
+    if (!this.ctx) return;
+    if (!settings.audioOn) active = false;
+    if (active) {
+      if (!this.windNode) this._startWind();
+    } else {
+      if (this.windNode) this._stopWind();
+    }
+  },
+
+  _startWind() {
+    const ctx = this.ctx;
+    const node = ctx.createBufferSource();
+    node.buffer = this.makeNoise(2);
+    node.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 700;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 350; bp.Q.value = 0.5;
+    const gain = ctx.createGain();
+    const now = ctx.currentTime;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.25);
+    node.connect(lp); lp.connect(bp); bp.connect(gain); gain.connect(this.master);
+    node.start(now);
+    this.windNode = node;
+    this.windGain = gain;
+  },
+
+  _stopWind() {
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const node = this.windNode;
+    const gain = this.windGain;
+    this.windNode = null;
+    this.windGain = null;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(gain.gain.value, now);
+    gain.gain.linearRampToValueAtTime(0.0001, now + 0.4);
+    node.stop(now + 0.5);
+  },
+};
+
+function initAudioOnce() {
+  audio.init();
+  audio.resume();
+  document.removeEventListener('pointerdown', initAudioOnce);
+  document.removeEventListener('keydown', initAudioOnce);
+}
+document.addEventListener('pointerdown', initAudioOnce);
+document.addEventListener('keydown', initAudioOnce);
 
 const MIN_AREA = 250;
 const DOT_SPACING = 14;
@@ -733,6 +900,7 @@ function startCutOnShape(targetShape) {
   if (!line) return false;
   const lineColor = `hsl(${Math.random() * 360}, 80%, 50%)`;
   cutState = { phase: 'draw', t: 0, line, lineColor, lineColorRGB: parseHSL(lineColor) };
+  audio.laser();
   return true;
 }
 
@@ -849,6 +1017,7 @@ function applyCut(line) {
     };
   }
   shapes = next;
+  if (newCutIndices.length > 0) audio.shatter();
 }
 
 function startPanOut() {
@@ -942,6 +1111,7 @@ function scheduleNextCut() {
 // ---------- update / render ----------
 function update(dt) {
   updateCamera(dt);
+  audio.ensureWind(cameraAnim !== null);
   const nrgb = neutralRGB();
   const neutralStr = settings.strokeColor;
   for (const s of shapes) {
@@ -1122,6 +1292,7 @@ function fmtSec(v) { return (v / 1000).toFixed(1) + 's'; }
 function fmtNum(v) { return String(v); }
 function fmtFloat(v) { return v.toFixed(1); }
 function fmtFloat2(v) { return v.toFixed(2); }
+function fmtPct(v) { return Math.round(v * 100) + '%'; }
 
 const widgetSyncs = [];
 
@@ -1236,6 +1407,11 @@ bindColor('p_bg',             'bgColor',        applyBg);
 bindColor('p_stroke',         'strokeColor');
 bindRange('p_strokeWidth',    'strokeWidth',    fmtPx);
 bindSelect('p_strokeStyle',   'strokeStyle');
+bindCheckbox('p_audioOn',     'audioOn',        () => {
+  audio.applyMasterVolume();
+  if (!settings.audioOn) audio.ensureWind(false);
+});
+bindRange('p_audioVolume',    'audioVolume',    fmtPct, () => audio.applyMasterVolume());
 
 document.getElementById('toggleBtn').addEventListener('click', () => {
   const p = document.getElementById('panel');

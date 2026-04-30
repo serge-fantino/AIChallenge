@@ -2,8 +2,9 @@
 
 A vibe-coding challenge: a single-page Canvas demo where random cut lines slice
 geometric shapes into pieces, with elastic / jelly impact animations,
-collision-aware separation, color fading, a glowing cut line, and three
-optional camera modes including a recursive infinite-zoom mode.
+collision-aware separation, color fading, a glowing cut line, three optional
+camera modes including a recursive infinite-zoom mode, and a fully synthesized
+Web Audio soundtrack (laser, shatter, wind).
 
 Inspired from https://www.instagram.com/reel/DXw9aQ3p6Tl/?igsh=MW44MXN1cXRyY28zdQ==
 
@@ -85,6 +86,17 @@ that builds on the original challenge with several layered features:
 - **Persisted settings**: every change is auto-saved to `localStorage` (key
   `sliceDemo.settings.v1`), so reloads keep your tweaks. The *Défauts* button
   restores the built-in defaults.
+- **Synthesized audio (Web Audio API, no external files)**:
+  - *Laser* on every cut line: sawtooth oscillator sweeping 1.8 kHz → 180 Hz
+    with an animated low-pass filter, ~180 ms.
+  - *Shatter* when the cut applies: bandpass-filtered noise impact, a
+    high-pass noise tail, and a handful of high-pitched triangle "tings" at
+    random frequencies — like broken dishware.
+  - *Wind* during camera pan / zoom: looped white noise filtered by a
+    low-pass + bandpass chain, with smooth fade-in / fade-out. Auto-starts
+    while the camera is animating, stops when it settles.
+  - Audio context is lazily created on the first user interaction (browser
+    gesture requirement).
 
 ## Settings
 
@@ -114,6 +126,8 @@ that builds on the original challenge with several layered features:
 | Apparence   | Trait             | base stroke color (= fade target)                      |
 | Apparence   | Épaisseur         | stroke width (in screen px, constant under zoom)       |
 | Apparence   | Style             | rivets / solid / dashed / dotted                       |
+| Son         | Activé            | master mute toggle                                     |
+| Son         | Volume            | master volume (0–100%)                                 |
 
 ## Run it
 
