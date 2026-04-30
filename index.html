@@ -56,6 +56,10 @@
       background: rgba(20,20,20,0.85); color: #fff; border: none; border-radius: 6px;
       font: inherit; }
     .panel button.action:hover { background: rgba(40,40,40,0.95); }
+    .panel .actions { display: flex; gap: 8px; }
+    .panel button.action { flex: 1; }
+    .panel button.action.secondary { background: rgba(0,0,0,0.12); color: #1a1a1a; }
+    .panel button.action.secondary:hover { background: rgba(0,0,0,0.22); }
     .panel .repo { margin-top: 14px; text-align: center; font-size: 12px; color: #555; }
     .panel .repo a { color: #1a4f8c; text-decoration: none; }
     .panel .repo a:hover { text-decoration: underline; }
@@ -76,7 +80,11 @@
     </div>
     <div class="row">
       <label>Mode caméra</label>
-      <input type="checkbox" id="p_cinematic">
+      <select id="p_cameraMode">
+        <option value="fix">Fixe</option>
+        <option value="pan">Pan</option>
+        <option value="zoom">Zoom infini</option>
+      </select>
     </div>
     <h2 class="cam-only">Caméra</h2>
     <div class="row cam-only">
@@ -206,15 +214,16 @@
     </div>
     <div class="actions">
       <button class="action" id="resetBtn">Recommencer</button>
+      <button class="action secondary" id="resetSettingsBtn">Défauts</button>
     </div>
     <div class="repo">
       <a href="https://github.com/serge-fantino/AIChallenge" target="_blank" rel="noopener">github.com/serge-fantino/AIChallenge</a>
     </div>
   </div>
 <script>
-const settings = {
+const defaultSettings = {
   shapeCount: 10,
-  cinematic: true,
+  cameraMode: 'pan',
   camPadding: 70,
   camMaxZoom: 2.6,
   camPanDuration: 900,
@@ -239,6 +248,24 @@ const settings = {
   strokeWidth: 5,
   strokeStyle: 'rivets',
 };
+const settings = { ...defaultSettings };
+
+const STORAGE_KEY = 'sliceDemo.settings.v1';
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    for (const k of Object.keys(saved)) {
+      if (k in settings) settings[k] = saved[k];
+    }
+  } catch (e) { /* ignore corrupted storage */ }
+}
+function saveSettings() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); }
+  catch (e) { /* ignore quota / disabled storage */ }
+}
+loadSettings();
 
 const MIN_AREA = 250;
 const DOT_SPACING = 14;
@@ -332,6 +359,12 @@ function finalCentroid(s) {
   const c = centroid(s.points);
   if (s.anim) return { x: c.x + s.anim.targetDx, y: c.y + s.anim.targetDy };
   return c;
+}
+// Whether a shape is large enough to cut, taking the current camera zoom into
+// account: at higher scale, smaller world-area shapes still look large on
+// screen and remain cuttable.
+function isCuttable(s) {
+  return area(s.points) * camera.scale * camera.scale >= MIN_AREA;
 }
 
 function makeCircle(cx, cy, r, segments = 28) {
@@ -602,7 +635,7 @@ function updateCamera(dt) {
 // ---------- zone-based selection ----------
 function shapesInZone(zone, extra = ZONE_TOLERANCE) {
   return shapes.filter(s => {
-    if (area(s.points) < MIN_AREA) return false;
+    if (!isCuttable(s)) return false;
     const c = finalCentroid(s);
     return Math.hypot(c.x - zone.cx, c.y - zone.cy) <= zone.radius + extra;
   });
@@ -615,9 +648,57 @@ function pickZoneWithCuttableShapes() {
 }
 
 function pickShapeInZone(zone) {
-  const candidates = shapesInZone(zone);
+  return preferCenter(shapesInZone(zone));
+}
+
+function cameraForShape(s) {
+  const c = finalCentroid(s);
+  const baseC = centroid(s.points);
+  const r = boundingRadius(s.points, baseC);
+  // padding interpreted as screen pixels so it stays consistent at high zoom
+  const screenPad = settings.camPadding;
+  const sX = (W - 2 * screenPad) / (2 * r);
+  const sY = (H - 2 * screenPad) / (2 * r);
+  return { cx: c.x, cy: c.y, scale: Math.max(1, Math.min(sX, sY)) };
+}
+
+// Prefer shapes whose centroid lies inside the central 20% radius of the
+// visible region; fall back to the full pool if nothing matches.
+function preferCenter(candidates) {
   if (candidates.length === 0) return null;
-  return candidates[Math.floor(Math.random() * candidates.length)];
+  const v = visibleRect();
+  const cx = (v.x0 + v.x1) / 2;
+  const cy = (v.y0 + v.y1) / 2;
+  const r = 0.2 * Math.min(v.x1 - v.x0, v.y1 - v.y0);
+  const inCircle = candidates.filter(s => {
+    const c = finalCentroid(s);
+    return Math.hypot(c.x - cx, c.y - cy) <= r;
+  });
+  const pool = inCircle.length > 0 ? inCircle : candidates;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function pickVisibleCuttable() {
+  const v = visibleRect();
+  const candidates = shapes.filter(s => {
+    if (!isCuttable(s)) return false;
+    const c = finalCentroid(s);
+    return c.x >= v.x0 && c.x <= v.x1 && c.y >= v.y0 && c.y <= v.y1;
+  });
+  return preferCenter(candidates);
+}
+
+function pickLargestVisible() {
+  const v = visibleRect();
+  let best = null, bestArea = 0;
+  for (const s of shapes) {
+    if (!isCuttable(s)) continue;
+    const c = finalCentroid(s);
+    if (c.x < v.x0 || c.x > v.x1 || c.y < v.y0 || c.y > v.y1) continue;
+    const a = area(s.points);
+    if (a > bestArea) { bestArea = a; best = s; }
+  }
+  return best;
 }
 
 function cameraForZone(zone) {
@@ -677,7 +758,7 @@ function applyCut(line) {
   for (const s of shapes) finalizeAnim(s);
   const items = [];
   for (const s of shapes) {
-    if (area(s.points) < MIN_AREA) {
+    if (!isCuttable(s)) {
       items.push({ basePoints: s.points, color: s.color, fade: s.fade || null,
         dx: 0, dy: 0, spin: 0, isCut: false });
       continue;
@@ -689,8 +770,12 @@ function applyCut(line) {
       continue;
     }
     const [a, b] = result;
-    const sepMin = settings.separation * 0.25;
-    const sep = sepMin + Math.random() * (settings.separation - sepMin);
+    // separation is in world coords; divide by current scale so the visual
+    // separation in screen pixels stays roughly constant at any zoom level
+    const sepScale = camera.scale;
+    const sepMin = (settings.separation * 0.25) / sepScale;
+    const sepMax = settings.separation / sepScale;
+    const sep = sepMin + Math.random() * (sepMax - sepMin);
     const ca = centroid(a);
     const sideA = line.a * ca.x + line.b * ca.y + line.c;
     const dir = sideA >= 0 ? 1 : -1;
@@ -774,39 +859,82 @@ function startPanOut() {
   });
 }
 
+function zoomDeeperOrReset() {
+  const next = pickLargestVisible();
+  if (!next) { startPanOut(); return; }
+  const targetCam = cameraForShape(next);
+  // bail out if we're not making meaningful progress, or zoom is getting silly
+  if (targetCam.scale <= camera.scale * 1.05 || targetCam.scale > 250) {
+    startPanOut();
+    return;
+  }
+  cinematicState.phase = 'panIn';
+  cinematicState.cutsRemaining = Math.max(1, settings.camCuts);
+  animateCamera(targetCam, settings.camPanDuration, () => {
+    if (cinematicState) cinematicState.phase = 'cutting';
+  });
+}
+
 function scheduleNextCut() {
-  if (!settings.cinematic) {
-    // simple per-zone single cut, no camera motion
+  const mode = settings.cameraMode;
+  if (mode === 'fix') {
     const zone = pickZoneWithCuttableShapes();
     if (!zone) return;
     const target = pickShapeInZone(zone);
     if (target) startCutOnShape(target);
     return;
   }
-  // cinematic flow
-  if (!cinematicState) {
-    const zone = pickZoneWithCuttableShapes();
-    if (!zone) return;
-    cinematicState = {
-      phase: 'panIn',
-      zone,
-      cutsRemaining: Math.max(1, settings.camCuts),
-    };
-    animateCamera(cameraForZone(zone), settings.camPanDuration, () => {
-      cinematicState.phase = 'cutting';
-    });
-    return;
-  }
-  if (cinematicState.phase === 'cutting') {
-    if (cinematicState.cutsRemaining > 0) {
-      const target = pickShapeInZone(cinematicState.zone);
-      if (target && startCutOnShape(target)) {
-        cinematicState.cutsRemaining--;
+  if (mode === 'pan') {
+    if (!cinematicState) {
+      const zone = pickZoneWithCuttableShapes();
+      if (!zone) return;
+      cinematicState = {
+        phase: 'panIn', zone,
+        cutsRemaining: Math.max(1, settings.camCuts),
+      };
+      animateCamera(cameraForZone(zone), settings.camPanDuration, () => {
+        if (cinematicState) cinematicState.phase = 'cutting';
+      });
+      return;
+    }
+    if (cinematicState.phase === 'cutting') {
+      if (cinematicState.cutsRemaining > 0) {
+        const target = pickShapeInZone(cinematicState.zone);
+        if (target && startCutOnShape(target)) {
+          cinematicState.cutsRemaining--;
+        } else {
+          startPanOut();
+        }
       } else {
         startPanOut();
       }
-    } else {
-      startPanOut();
+    }
+    return;
+  }
+  if (mode === 'zoom') {
+    if (!cinematicState) {
+      const zone = pickZoneWithCuttableShapes();
+      if (!zone) return;
+      cinematicState = {
+        phase: 'panIn',
+        cutsRemaining: Math.max(1, settings.camCuts),
+      };
+      animateCamera(cameraForZone(zone), settings.camPanDuration, () => {
+        if (cinematicState) cinematicState.phase = 'cutting';
+      });
+      return;
+    }
+    if (cinematicState.phase === 'cutting') {
+      if (cinematicState.cutsRemaining > 0) {
+        const target = pickVisibleCuttable();
+        if (target && startCutOnShape(target)) {
+          cinematicState.cutsRemaining--;
+        } else {
+          zoomDeeperOrReset();
+        }
+      } else {
+        zoomDeeperOrReset();
+      }
     }
   }
 }
@@ -863,8 +991,9 @@ function update(dt) {
 
 function applyStrokeStyle() {
   const style = settings.strokeStyle;
-  if (style === 'dashed') ctx.setLineDash([12, 8]);
-  else if (style === 'dotted') ctx.setLineDash([2, 6]);
+  const s = camera.scale;
+  if (style === 'dashed') ctx.setLineDash([12 / s, 8 / s]);
+  else if (style === 'dotted') ctx.setLineDash([2 / s, 6 / s]);
   else ctx.setLineDash([]);
 }
 
@@ -878,24 +1007,26 @@ function drawShape(s) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.strokeStyle = s.color;
-  ctx.lineWidth = settings.strokeWidth;
+  ctx.lineWidth = settings.strokeWidth / camera.scale;
   applyStrokeStyle();
   ctx.stroke();
   ctx.setLineDash([]);
   if (settings.strokeStyle === 'rivets') {
     ctx.fillStyle = '#5c5c5c';
+    const spacing = DOT_SPACING / camera.scale;
+    const r = 1.2 / camera.scale;
     for (let i = 0; i < n; i++) {
       const p1 = pts[i], p2 = pts[(i + 1) % n];
       const dx = p2.x - p1.x, dy = p2.y - p1.y;
       const len = Math.hypot(dx, dy);
-      if (len < DOT_SPACING * 1.2) continue;
-      const count = Math.max(1, Math.floor(len / DOT_SPACING));
+      if (len < spacing * 1.2) continue;
+      const count = Math.max(1, Math.floor(len / spacing));
       for (let k = 1; k < count; k++) {
         const t = k / count;
         const x = p1.x + dx * t;
         const y = p1.y + dy * t;
         ctx.beginPath();
-        ctx.arc(x, y, 1.2, 0, Math.PI * 2);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -992,53 +1123,77 @@ function fmtNum(v) { return String(v); }
 function fmtFloat(v) { return v.toFixed(1); }
 function fmtFloat2(v) { return v.toFixed(2); }
 
+const widgetSyncs = [];
+
 function bindRange(id, key, fmt, onChange) {
   const el = document.getElementById(id);
   const val = document.getElementById('v_' + id.slice(2));
-  el.value = settings[key];
-  if (val) val.textContent = fmt(settings[key]);
+  const sync = () => {
+    el.value = settings[key];
+    if (val) val.textContent = fmt(settings[key]);
+  };
+  sync();
   el.addEventListener('input', () => {
     settings[key] = +el.value;
     if (val) val.textContent = fmt(settings[key]);
     if (onChange) onChange();
+    saveSettings();
   });
+  widgetSyncs.push(sync);
 }
 function bindColor(id, key, onChange) {
   const el = document.getElementById(id);
-  el.value = settings[key];
+  const sync = () => { el.value = settings[key]; };
+  sync();
   el.addEventListener('input', () => {
     settings[key] = el.value;
     if (onChange) onChange();
+    saveSettings();
   });
+  widgetSyncs.push(sync);
 }
 function bindSelect(id, key, onChange) {
   const el = document.getElementById(id);
-  el.value = settings[key];
+  const sync = () => { el.value = settings[key]; };
+  sync();
   el.addEventListener('change', () => {
     settings[key] = el.value;
     if (onChange) onChange();
+    saveSettings();
   });
+  widgetSyncs.push(sync);
 }
 function bindCheckbox(id, key, onChange) {
   const el = document.getElementById(id);
-  el.checked = settings[key];
+  const sync = () => { el.checked = settings[key]; };
+  sync();
   el.addEventListener('change', () => {
     settings[key] = el.checked;
     if (onChange) onChange();
+    saveSettings();
   });
+  widgetSyncs.push(sync);
+}
+function resetSettings() {
+  Object.assign(settings, defaultSettings);
+  for (const f of widgetSyncs) f();
+  applyBg();
+  applyCamMode();
+  saveSettings();
 }
 
 function applyBg() { document.body.style.background = settings.bgColor; }
 
 function applyCamMode() {
-  document.body.classList.toggle('no-cam', !settings.cinematic);
+  document.body.classList.toggle('no-cam', settings.cameraMode === 'fix');
 }
 
 bindRange('p_count',          'shapeCount',     fmtNum);
-bindCheckbox('p_cinematic',   'cinematic',      () => {
+bindSelect('p_cameraMode',    'cameraMode',     () => {
   applyCamMode();
   cinematicState = null;
-  if (!settings.cinematic && (camera.scale !== 1 || camera.cx !== W/2 || camera.cy !== H/2)) {
+  if (settings.cameraMode === 'fix' &&
+      (camera.scale !== 1 || camera.cx !== W/2 || camera.cy !== H/2)) {
     animateCamera(identityCamera(), 600);
   }
 });
@@ -1087,6 +1242,7 @@ document.getElementById('toggleBtn').addEventListener('click', () => {
   p.hidden = !p.hidden;
 });
 document.getElementById('resetBtn').addEventListener('click', reset);
+document.getElementById('resetSettingsBtn').addEventListener('click', resetSettings);
 
 applyBg();
 applyCamMode();

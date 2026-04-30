@@ -1,13 +1,13 @@
 # Slice Demo
 
 A vibe-coding challenge: a single-page Canvas demo where random cut lines slice
-geometric shapes into pieces, with elastic impact animations, collision-aware
-separation, color fading, and an optional cinematic camera that zooms onto
-clusters of shapes.
+geometric shapes into pieces, with elastic / jelly impact animations,
+collision-aware separation, color fading, a glowing cut line, and three
+optional camera modes including a recursive infinite-zoom mode.
 
 Inspired from https://www.instagram.com/reel/DXw9aQ3p6Tl/?igsh=MW44MXN1cXRyY28zdQ==
 
-Demo here: https://serge-fantino.github.io/AIChallenge/ 
+Demo here: https://serge-fantino.github.io/AIChallenge/
 
 ## The challenge
 
@@ -31,11 +31,16 @@ that builds on the original challenge with several layered features:
 - **Convex polygon clipping**: each cut line splits any intersecting convex
   polygon into two convex halves by walking edges, classifying vertices by
   signed distance to the line, and inserting interpolated intersection points.
-- **Elastic impact animation**: the two halves fly apart along the cut normal
-  with an `ease-out-elastic` overshoot, plus a small counter-rotating spin —
-  like real impact debris. The transform is applied at draw time and "baked"
-  into the points only when the animation settles, so subsequent cuts always
-  operate on coherent geometry.
+- **Four cut animation modes**:
+  - *Rigide* — original behavior: rigid translate + counter-rotating spin with
+    `ease-out-elastic`.
+  - *Jelly* — per-point delay based on distance to the cut line. Points on the
+    cut edge fly out first, far points lag behind, the shape stretches and
+    snaps back into shape.
+  - *Vague* — per-point delay based on signed projection along the cut tangent;
+    one end of the cut leaves first, the other follows like a wave.
+  - *Squash* — non-uniform scale pulse that elongates the piece along the
+    motion direction and compresses it perpendicular to it.
 - **Collision-aware separation (SAT)**: after a cut, all pieces (the new
   halves *and* any other shape they intrude into) are pushed apart by an
   iterative relaxation loop using the Separating Axis Theorem. The result is
@@ -46,43 +51,69 @@ that builds on the original challenge with several layered features:
   switchable: rivets, solid, dashed, dotted.
 - **Cut line never misses**: a cut line is always routed through the centroid
   of an existing cuttable shape, then extended to the edges of the visible
-  region. No more "wasted" cuts.
-- **Single-piece colorization**: across the whole cut path, exactly one (or a
-  configurable number) of the new pieces inherits the cut line's color.
+  region. The target is biased toward shapes whose centroid lies inside the
+  central 20% of the visible viewport, so the line consistently passes near the
+  center of the screen.
+- **Glowing cut line**: the line is wrapped in a softer, lighter, semi-
+  transparent halo (two layers for a smooth falloff) that fades faster than
+  the line itself for a quick "spark of impact" feel. Glow size, decay and
+  intensity are configurable.
+- **Single / multi-piece colorization**: across the whole cut path, one or
+  more (configurable) of the new pieces inherit the cut line's color.
 - **Color fade-back**: colored pieces gradually return to neutral grey over a
-  random 10–20 s window. When a colored piece is itself recut, both halves
-  inherit and continue the same fade; the newly chosen piece on the next cut
-  starts a fresh one.
-- **Cinematic camera mode** (toggle in settings): instead of showing the whole
-  page, the camera pans + zooms onto a "zone" anchored to one of the original
-  initial shapes, performs N successive cuts within that zone, then pans back
-  out to the overview before picking a new zone. The framing is computed from
-  the actual current bounds of the zone's descendants (which stay nearby
-  thanks to SAT relaxation), with `ease-in-out` cubic transitions.
+  random window. When a colored piece is itself recut, both halves inherit and
+  continue the same fade; the newly chosen piece on the next cut starts a
+  fresh one.
+- **Three camera modes**:
+  - *Fixe* — no camera animation, the whole canvas stays in view.
+  - *Pan* — for each cycle, pan + zoom into a cluster anchored to one of the
+    initial shapes, do N cuts inside that zone, pan back out, pick another.
+    Framing follows the current bounds of the zone's descendants.
+  - *Zoom infini* — recursive drilling: do N cuts in the current view, then
+    zoom further into the largest visible piece and repeat. Stops when the
+    visible area runs out of cuttable pieces or the cumulative scale gets out
+    of hand, then resets to the overview.
+- **Zoom-aware rendering & physics**: at any zoom level, stroke width, rivet
+  spacing/radius, dash patterns, and the cut separation distance are scaled by
+  the inverse of `camera.scale` so they all keep a constant on-screen size.
+  The cuttable threshold (`MIN_AREA`) is interpreted in screen-space too,
+  letting the recursive zoom continue cutting tiny world-coord pieces that
+  still look big on screen.
 - **Translucent settings panel**: a slide-in panel (⚙ button, top right)
-  exposes all animation parameters with live updates.
+  exposes all animation parameters with live updates and a "Recommencer" /
+  "Défauts" pair of buttons.
+- **Persisted settings**: every change is auto-saved to `localStorage` (key
+  `sliceDemo.settings.v1`), so reloads keep your tweaks. The *Défauts* button
+  restores the built-in defaults.
 
 ## Settings
 
-| Group       | Parameter         | Notes                                       |
-| ----------- | ----------------- | ------------------------------------------- |
-| Setup       | Formes            | initial shape count (apply via *Recommencer*) |
-| Setup       | Mode caméra       | toggles cinematic mode + camera section     |
-| Caméra      | Padding           | extra margin around the framed cluster      |
-| Caméra      | Zoom max          | zoom cap                                    |
-| Caméra      | Vitesse pan       | pan-in / pan-out duration                   |
-| Caméra      | Coupes/zone       | number of successive cuts per cluster       |
-| Caméra      | Pause vue         | hold time at the overview between zones     |
-| Coupe       | Vitesse ligne     | line draw + fade duration                   |
-| Coupe       | Vitesse découpe   | piece animation total duration              |
-| Coupe       | Élasticité        | elastic decay (lower = bouncier)            |
-| Coupe       | Écartement        | max separation distance per cut             |
-| Coupe       | Pièces colorées   | how many pieces inherit the cut color       |
-| Couleur     | Fade min / max    | range for the fade-to-grey duration         |
-| Apparence   | Fond              | background color                            |
-| Apparence   | Trait             | base stroke color (= fade target)           |
-| Apparence   | Épaisseur         | stroke width                                |
-| Apparence   | Style             | rivets / solid / dashed / dotted            |
+| Group       | Parameter         | Notes                                                  |
+| ----------- | ----------------- | ------------------------------------------------------ |
+| Setup       | Formes            | initial shape count (apply via *Recommencer*)          |
+| Setup       | Mode caméra       | Fixe / Pan / Zoom infini                               |
+| Caméra      | Padding           | extra margin around the framed cluster (screen px)     |
+| Caméra      | Zoom max          | zoom cap (used in Pan mode framing)                    |
+| Caméra      | Vitesse pan       | pan-in / pan-out duration                              |
+| Caméra      | Coupes/zone       | number of successive cuts per zoom level               |
+| Caméra      | Pause vue         | hold time at the overview between cycles               |
+| Coupe       | Vitesse           | piece animation total duration                         |
+| Coupe       | Mode              | Rigide / Jelly / Vague / Squash                        |
+| Coupe       | Élasticité        | elastic decay (lower = bouncier)                       |
+| Coupe       | Spread jelly      | per-point delay spread for Jelly / Vague               |
+| Coupe       | Écartement        | max separation distance per cut (screen px)            |
+| Coupe       | Pièces colorées   | how many new pieces inherit the cut color              |
+| Ligne       | Vitesse           | line draw + fade duration                              |
+| Ligne       | Maintien          | how long the line stays at full opacity after the cut  |
+| Ligne       | Pause             | pause between cuts                                     |
+| Ligne       | Glow              | halo width                                             |
+| Ligne       | Glow decay        | how fast the halo fades after the line is drawn        |
+| Ligne       | Glow intensité    | multiplier on halo opacity                             |
+| Couleur     | Fade min / max    | range for the fade-to-grey duration                    |
+| Apparence   | Fond              | background color                                       |
+| Apparence   | Trait             | base stroke color (= fade target)                      |
+| Apparence   | Épaisseur         | stroke width (in screen px, constant under zoom)       |
+| Apparence   | Style             | rivets / solid / dashed / dotted                       |
 
 ## Run it
 
@@ -90,6 +121,7 @@ Open `index.html` in any modern browser. No build step, no server.
 
 - Click the canvas, or press `space` / `r`, to reset.
 - Click ⚙ (top right) to open the settings panel.
+- *Recommencer* regenerates the scene; *Défauts* restores the default settings.
 
 ## Notes
 
