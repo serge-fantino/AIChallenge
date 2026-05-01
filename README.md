@@ -86,6 +86,20 @@ that builds on the original challenge with several layered features:
 - **Persisted settings**: every change is auto-saved to `localStorage` (key
   `sliceDemo.settings.v1`), so reloads keep your tweaks. The *Défauts* button
   restores the built-in defaults.
+- **DEMO / PLAY toggle** (top-left button, also a checkbox in the panel):
+  - *DEMO* — the autonomous cycle described above runs on its own.
+  - *PLAY* — every cut is click-driven. The first click acknowledges with
+    a cut in the current view, then the camera pans in (in Pan / Zoom
+    modes) and the user clicks again for each subsequent cut. After
+    `Coupes/zone` clicks, the camera advances (pan-out in Pan mode, zoom
+    deeper into the largest visible piece in Zoom mode), and the next
+    click in the new view continues the cycle.
+- **Free-look gestures** (work in both DEMO and PLAY):
+  - Two-finger drag on touch devices = pan; pinch = zoom.
+  - Trackpad two-finger scroll = pan; pinch (or `ctrl`/`cmd`+wheel) = zoom
+    around the cursor.
+  - In DEMO mode, gestures suspend the auto cycle for ~3 s of inactivity
+    so the camera doesn't immediately yank itself back to a cluster.
 - **Synthesized audio (Web Audio API, no external files)**:
   - *Laser* on every cut line: sawtooth oscillator sweeping 1.8 kHz → 180 Hz
     with an animated low-pass filter, ~180 ms.
@@ -104,6 +118,7 @@ that builds on the original challenge with several layered features:
 | ----------- | ----------------- | ------------------------------------------------------ |
 | Setup       | Formes            | initial shape count (apply via *Recommencer*)          |
 | Setup       | Mode caméra       | Fixe / Pan / Zoom infini                               |
+| Setup       | Interactif        | toggle DEMO ↔ PLAY (top-left button mirrors this)      |
 | Caméra      | Padding           | extra margin around the framed cluster (screen px)     |
 | Caméra      | Zoom max          | zoom cap (used in Pan mode framing)                    |
 | Caméra      | Vitesse pan       | pan-in / pan-out duration                              |
@@ -168,7 +183,10 @@ degradation in real time.
 
 Open `index.html` in any modern browser. No build step, no server.
 
-- Click the canvas, or press `space` / `r`, to reset.
+- Click the canvas, or press `space` / `r`, to reset (DEMO mode).
+- In PLAY mode, each click on the canvas triggers a cut at that point.
+- Two-finger drag (touch) or trackpad scroll = pan; pinch / `ctrl`+wheel = zoom.
+- Click the top-left **DEMO / PLAY** button to switch modes.
 - Click ⚙ (top right) to open the settings panel.
 - *Recommencer* regenerates the scene; *Défauts* restores the default settings.
 
