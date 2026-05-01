@@ -17,12 +17,15 @@
       width: 40px; height: 40px;
       border: none; background: rgba(255,255,255,0.55);
       border-radius: 8px; cursor: pointer;
-      font-size: 20px; line-height: 40px; text-align: center;
+      font-size: 20px;
+      display: inline-flex; align-items: center; justify-content: center;
+      color: #1a1a1a;
       box-shadow: 0 2px 8px rgba(0,0,0,0.12);
       z-index: 100; user-select: none;
       backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
     }
     .toggle:hover { background: rgba(255,255,255,0.8); }
+    .toggle svg { display: block; }
     .mode-toggle {
       position: fixed; top: 12px; left: 12px;
       height: 32px; padding: 0 14px;
@@ -41,6 +44,60 @@
     .mode-toggle:hover { background: rgba(200,200,200,0.72); }
     .mode-toggle.mode-play { background: rgba(170,205,170,0.55); color: #173817; }
     .mode-toggle.mode-play:hover { background: rgba(170,205,170,0.78); }
+    .speed-toggle {
+      position: fixed; top: 12px; left: 96px;
+      height: 32px; padding: 0 12px;
+      border: none;
+      background: rgba(200,200,200,0.5);
+      border-radius: 8px; cursor: pointer;
+      font: 600 12px ui-monospace, Menlo, Consolas, monospace;
+      color: #1a1a1a;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+      z-index: 100;
+      user-select: none;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      min-width: 44px;
+    }
+    .speed-toggle:hover { background: rgba(200,200,200,0.72); }
+    .toggle.export { right: 60px; }
+    #cropOverlay {
+      position: fixed; inset: 0;
+      z-index: 95;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .crop-rect {
+      position: absolute;
+      border: 2px solid rgba(255,255,255,0.92);
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.42);
+      pointer-events: none;
+    }
+    .crop-toolbar {
+      position: absolute;
+      bottom: 24px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(255,255,255,0.94);
+      padding: 8px 12px;
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      font: 13px -apple-system, system-ui, sans-serif;
+    }
+    .crop-toolbar .crop-hint { color: #555; margin-right: 4px; }
+    .crop-toolbar button {
+      padding: 6px 14px;
+      border: none; border-radius: 6px;
+      cursor: pointer;
+      font: inherit;
+    }
+    .crop-toolbar button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .crop-toolbar button#cropOkBtn     { background: #2c7a2c; color: #fff; }
+    .crop-toolbar button#cropOkBtn:hover:not(:disabled) { background: #348534; }
+    .crop-toolbar button#cropFitBtn    { background: #d8d8d8; color: #1a1a1a; }
+    .crop-toolbar button#cropFitBtn:hover { background: #c8c8c8; }
+    .crop-toolbar button#cropCancelBtn { background: transparent; color: #666; }
+    .crop-toolbar button#cropCancelBtn:hover { background: rgba(0,0,0,0.06); color: #222; }
     .panel {
       position: fixed; top: 0; right: 0;
       height: 100vh; width: 320px;
@@ -103,10 +160,20 @@
     .panel .repo a:hover { text-decoration: underline; }
     .cam-only { transition: opacity 0.15s; }
     body.no-cam .cam-only { display: none; }
+    #vignette {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      backdrop-filter: blur(var(--vignette-blur, 18px));
+      -webkit-backdrop-filter: blur(var(--vignette-blur, 18px));
+      mask-image: radial-gradient(ellipse at center, transparent 58%, #000 96%);
+      -webkit-mask-image: radial-gradient(ellipse at center, transparent 58%, #000 96%);
+    }
   </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
+  <div id="vignette"></div>
   <div class="hint">click / espace = recommencer</div>
   <div class="hud" id="hud">
     <div class="hud-row"><span class="hud-label">Pièces</span><span class="hud-value" id="hud_count">0</span></div>
@@ -114,13 +181,40 @@
     <div class="hud-row"><span class="hud-label">Charge</span><span class="hud-value" id="hud_deg">—</span></div>
   </div>
   <button class="mode-toggle" id="modeBtn" title="Basculer mode démo / interactif">DEMO</button>
+  <button class="speed-toggle" id="speedBtn" title="Vitesse globale">1×</button>
+  <button class="toggle export" id="exportBtn" title="Exporter en PNG">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+  </button>
   <button class="toggle" id="toggleBtn" title="Réglages">⚙</button>
+  <div id="cropOverlay" hidden>
+    <div class="crop-rect" id="cropRect" hidden></div>
+    <div class="crop-toolbar">
+      <span class="crop-hint">Glisse pour sélectionner une zone</span>
+      <button id="cropOkBtn" disabled>Exporter</button>
+      <button id="cropFitBtn">Tout cadrer</button>
+      <button id="cropCancelBtn">Annuler</button>
+    </div>
+  </div>
   <div class="panel" id="panel" hidden>
     <h2>Setup</h2>
     <div class="row">
       <label>Formes</label>
       <input type="range" id="p_count" min="1" max="30" step="1">
       <span class="val" id="v_count"></span>
+    </div>
+    <div class="row">
+      <label>Marge centrale</label>
+      <input type="range" id="p_shapeInset" min="0" max="0.3" step="0.01">
+      <span class="val" id="v_shapeInset"></span>
+    </div>
+    <div class="row">
+      <label>Espacement</label>
+      <input type="range" id="p_shapeGap" min="0" max="60" step="1">
+      <span class="val" id="v_shapeGap"></span>
     </div>
     <div class="row">
       <label>Mode caméra</label>
@@ -151,9 +245,14 @@
       <span class="val" id="v_camPanDuration"></span>
     </div>
     <div class="row cam-only">
-      <label>Coupes/zone</label>
-      <input type="range" id="p_camCuts" min="1" max="6" step="1">
+      <label>Coupes min</label>
+      <input type="range" id="p_camCuts" min="1" max="10" step="1">
       <span class="val" id="v_camCuts"></span>
+    </div>
+    <div class="row cam-only">
+      <label>Coupes max</label>
+      <input type="range" id="p_camCutsMax" min="1" max="12" step="1">
+      <span class="val" id="v_camCutsMax"></span>
     </div>
     <div class="row cam-only">
       <label>Pause vue</label>
@@ -252,6 +351,25 @@
       <span class="val" id="v_strokeWidth"></span>
     </div>
     <div class="row">
+      <label>Trait proportionnel</label>
+      <input type="checkbox" id="p_proportionalStroke">
+    </div>
+    <div class="row">
+      <label>Réf. trait</label>
+      <input type="range" id="p_strokeRefRadius" min="20" max="200" step="5">
+      <span class="val" id="v_strokeRefRadius"></span>
+    </div>
+    <div class="row">
+      <label>Trait max</label>
+      <input type="range" id="p_strokeMaxWidth" min="2" max="80" step="1">
+      <span class="val" id="v_strokeMaxWidth"></span>
+    </div>
+    <div class="row">
+      <label>Vignette</label>
+      <input type="range" id="p_vignette" min="0" max="40" step="1">
+      <span class="val" id="v_vignette"></span>
+    </div>
+    <div class="row">
       <label>Style</label>
       <select id="p_strokeStyle">
         <option value="rivets">Rivets</option>
@@ -280,14 +398,18 @@
   </div>
 <script>
 const defaultSettings = {
-  shapeCount: 10,
+  shapeCount: 20,
+  shapeInset: 0.12,
+  shapeGap: 8,
   cameraMode: 'pan',
   interactive: false,
   camPadding: 70,
   camMaxZoom: 2.6,
   camPanDuration: 900,
   camCuts: 3,
+  camCutsMax: 6,
   camOverviewHold: 350,
+  speed: 1,
   animDuration: 1000,
   elasticity: 9,
   separation: 32,
@@ -306,6 +428,11 @@ const defaultSettings = {
   strokeColor: '#9a9a9a',
   strokeWidth: 5,
   strokeStyle: 'rivets',
+  proportionalStroke: true,
+  strokeRefRadius: 60,
+  strokeMaxWidth: 18,
+  exportScale: 3,
+  vignette: 18,
   audioOn: true,
   audioVolume: 0.4,
 };
@@ -489,8 +616,11 @@ const FIRST_CUT_DELAY = 600;
 const ZONE_TOLERANCE = 60;
 const GESTURE_INACTIVITY_DELAY = 3000; // extra radius around an initial shape to find descendants
 
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+// `canvas` and `ctx` are mutable so the export path can temporarily swap
+// them out for an offscreen high-resolution canvas, run render(), snapshot,
+// then restore. The live values are reassigned only inside that helper.
+let canvas = document.getElementById('canvas');
+let ctx = canvas.getContext('2d');
 let W, H;
 function resize() {
   const dpr = window.devicePixelRatio || 1;
@@ -607,11 +737,12 @@ function makeCircle(cx, cy, r, segments = 28) {
   }
   return pts;
 }
-function makeTriangle(cx, cy, r) {
+function makeRegularPolygon(cx, cy, r, sides) {
   const a0 = Math.random() * Math.PI * 2;
   const pts = [];
-  for (let i = 0; i < 3; i++) {
-    const a = a0 + i * (Math.PI * 2 / 3);
+  for (let i = 0; i < sides; i++) {
+    const a = a0 + i * (Math.PI * 2 / sides);
+    // slight per-vertex scale jitter so shapes don't look perfectly regular
     const rr = r * (0.85 + Math.random() * 0.3);
     pts.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr });
   }
@@ -632,30 +763,146 @@ function makeParallelogram(cx, cy, r) {
   ];
 }
 
-function generateInitialShapes(count) {
-  const out = [];
-  const margin = 50;
-  const minR = 45, maxR = 95;
-  let attempts = 0;
-  while (out.length < count && attempts < 8000) {
-    attempts++;
-    const r = minR + Math.random() * (maxR - minR);
-    const cx = margin + r + Math.random() * Math.max(1, W - 2 * (margin + r));
-    const cy = margin + r + Math.random() * Math.max(1, H - 2 * (margin + r));
-    let ok = true;
-    for (const s of out) {
-      const c = centroid(s.points);
-      const sr = boundingRadius(s.points, c);
-      if (Math.hypot(cx - c.x, cy - c.y) < r + sr + 12) { ok = false; break; }
+// Pool of shape factories (cx, cy, r) -> points[]. Mixes circles, regular
+// polygons of various sides, and parallelograms.
+const SHAPE_KINDS = [
+  (cx, cy, r) => makeCircle(cx, cy, r),
+  (cx, cy, r) => makeRegularPolygon(cx, cy, r, 3),
+  (cx, cy, r) => makeParallelogram(cx, cy, r),
+  (cx, cy, r) => makeRegularPolygon(cx, cy, r, 5),
+  (cx, cy, r) => makeRegularPolygon(cx, cy, r, 6),
+  (cx, cy, r) => makeRegularPolygon(cx, cy, r, 7),
+  (cx, cy, r) => makeRegularPolygon(cx, cy, r, 8),
+];
+
+// Phyllotaxis spiral (sunflower / golden-angle): starts at the center of
+// the rect, walks outward placing each successive point at the golden angle
+// from the previous and a radius growing as sqrt(n). Achieves hex-packing
+// density (the densest possible for circles of the same size) and stops
+// when the spiral has clearly left the rect. `c = minDist/2` gives each
+// point a claimed area of π·(minDist/2)² — exactly the hex packing footprint.
+function phyllotaxisPlacement(rectW, rectH, minDist, maxCount) {
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const c = minDist / 2;
+  const cx = rectW / 2, cy = rectH / 2;
+  const pts = [];
+  let n = 0;
+  let consecOut = 0;
+  // Stop after enough consecutive out-of-rect samples (spiral has exited).
+  while (pts.length < maxCount && consecOut < 200) {
+    const r = c * Math.sqrt(n);
+    const a = n * goldenAngle;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    n++;
+    if (x >= 0 && x <= rectW && y >= 0 && y <= rectH) {
+      pts.push({ x, y });
+      consecOut = 0;
+    } else {
+      consecOut++;
     }
-    if (!ok) continue;
-    const kind = Math.floor(Math.random() * 3);
-    let pts;
-    if (kind === 0) pts = makeCircle(cx, cy, r);
-    else if (kind === 1) pts = makeTriangle(cx, cy, r);
-    else pts = makeParallelogram(cx, cy, r);
-    out.push({ points: pts, color: settings.strokeColor });
   }
+  return pts;
+}
+
+// Bridson Poisson-disk sampling: blue-noise distribution of points within
+// a rectangle, each at least `minDist` away from every other. Kept as an
+// alternative; phyllotaxis is the default placement.
+function poissonDiskPoints(rectW, rectH, minDist, maxPoints) {
+  const k = 30; // candidates per active sample
+  const cellSize = minDist / Math.SQRT2;
+  const gridCols = Math.max(1, Math.ceil(rectW / cellSize));
+  const gridRows = Math.max(1, Math.ceil(rectH / cellSize));
+  const grid = new Array(gridCols * gridRows).fill(null);
+  const points = [];
+  const active = [];
+  const minDist2 = minDist * minDist;
+
+  function fits(x, y) {
+    const gx = Math.floor(x / cellSize);
+    const gy = Math.floor(y / cellSize);
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = gx + dx, ny = gy + dy;
+        if (nx < 0 || ny < 0 || nx >= gridCols || ny >= gridRows) continue;
+        const q = grid[ny * gridCols + nx];
+        if (!q) continue;
+        const ddx = q.x - x, ddy = q.y - y;
+        if (ddx * ddx + ddy * ddy < minDist2) return false;
+      }
+    }
+    return true;
+  }
+  function add(x, y) {
+    const p = { x, y };
+    points.push(p); active.push(p);
+    grid[Math.floor(y / cellSize) * gridCols + Math.floor(x / cellSize)] = p;
+  }
+  // Seed somewhere in the middle so the algorithm doesn't propagate from a corner
+  add(rectW * (0.3 + Math.random() * 0.4), rectH * (0.3 + Math.random() * 0.4));
+  while (active.length > 0 && points.length < maxPoints) {
+    const i = Math.floor(Math.random() * active.length);
+    const c = active[i];
+    let found = false;
+    for (let a = 0; a < k; a++) {
+      const ang = Math.random() * Math.PI * 2;
+      const d = minDist + Math.random() * minDist; // annulus [r, 2r]
+      const x = c.x + Math.cos(ang) * d;
+      const y = c.y + Math.sin(ang) * d;
+      if (x < 0 || y < 0 || x >= rectW || y >= rectH) continue;
+      if (fits(x, y)) { add(x, y); found = true; break; }
+    }
+    if (!found) active.splice(i, 1);
+  }
+  return points;
+}
+
+function generateInitialShapes(count) {
+  if (count <= 0 || W <= 0 || H <= 0) return [];
+  // Inset the placement rect on each axis independently — `shapeInset` is a
+  // fraction of each dimension applied to both sides, so the central rect is
+  // (1 - 2·inset) × (1 - 2·inset) of the canvas regardless of aspect ratio.
+  const insetFrac = Math.max(0, Math.min(0.4, settings.shapeInset));
+  const insetX = W * insetFrac;
+  const insetY = H * insetFrac;
+  const rectW = Math.max(1, W - 2 * insetX);
+  const rectH = Math.max(1, H - 2 * insetY);
+  // Shape size is set from the **full canvas area** and `count`, NOT from
+  // the inset rect — so changing the margin never shrinks the pieces. A
+  // tighter margin just means fewer slots; if the central rect can't hold
+  // `count` shapes at this size, the Poisson sampler returns fewer and we
+  // place what we can.
+  const targetCoverage = 0.95;
+  const baseRadius = Math.sqrt(targetCoverage * W * H / count / Math.PI);
+  const maxR = Math.max(20, baseRadius);
+  const minR = Math.max(20, baseRadius * 0.65);
+  // The Poisson constraint: centers at least 2·maxR + gap apart. So even
+  // two max-size neighbors can't touch — there's always at least `gap`
+  // pixels of clear space between their bounding circles. Smaller gap =
+  // tighter packing = more mixing during cuts.
+  const gap = Math.max(0, settings.shapeGap || 0);
+  const minDist = 2 * maxR + gap;
+  // Spiral placement from the center outward, hex-packing density. If the
+  // rect can't hold `count` shapes at this size, the spiral stops early
+  // and we place fewer (no retry, no shape shrinking).
+  const pts = phyllotaxisPlacement(rectW, rectH, minDist, count);
+  for (let i = pts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pts[i], pts[j]] = [pts[j], pts[i]];
+  }
+  const out = [];
+  for (const p of pts) {
+    const r = minR + Math.random() * Math.max(0, maxR - minR);
+    const make = SHAPE_KINDS[Math.floor(Math.random() * SHAPE_KINDS.length)];
+    out.push({
+      points: make(p.x + insetX, p.y + insetY, r),
+      color: settings.strokeColor,
+    });
+  }
+  // Same SAT relaxation we use during cuts: pushes any pair of shapes whose
+  // polygons actually overlap (e.g. heptagon vertex protruding into a hex
+  // neighbor) until none touch.
+  relaxOverlapsInPlace(out);
   return out;
 }
 
@@ -756,6 +1003,49 @@ function projectOnto(pts, ax) {
   }
   return [mn, mx];
 }
+// In-place SAT relaxation: pushes overlapping shapes apart so none of their
+// polygons intersect. Uses the same AABB broad-phase + MTV approach as the
+// cut-time relaxation in applyCut, but mutates `s.points` directly instead
+// of accumulating offsets on items.
+function relaxOverlapsInPlace(shapesArr, maxIter) {
+  const N = shapesArr.length;
+  if (N < 2) return;
+  const ax0 = new Float64Array(N), ay0 = new Float64Array(N);
+  const ax1 = new Float64Array(N), ay1 = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const pts = shapesArr[i].points;
+    for (let k = 0; k < pts.length; k++) {
+      const p = pts[k];
+      if (p.x < x0) x0 = p.x;
+      if (p.x > x1) x1 = p.x;
+      if (p.y < y0) y0 = p.y;
+      if (p.y > y1) y1 = p.y;
+    }
+    ax0[i] = x0; ay0[i] = y0; ax1[i] = x1; ay1[i] = y1;
+  }
+  const ITERS = maxIter || 60;
+  for (let iter = 0; iter < ITERS; iter++) {
+    let any = false;
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        if (ax1[i] < ax0[j] || ax1[j] < ax0[i] ||
+            ay1[i] < ay0[j] || ay1[j] < ay0[i]) continue;
+        const v = mtv(shapesArr[i].points, shapesArr[j].points);
+        if (!v) continue;
+        any = true;
+        const hx = v.x * 0.5, hy = v.y * 0.5;
+        const ti = shapesArr[i].points, tj = shapesArr[j].points;
+        for (let k = 0; k < ti.length; k++) { ti[k].x += hx; ti[k].y += hy; }
+        for (let k = 0; k < tj.length; k++) { tj[k].x -= hx; tj[k].y -= hy; }
+        ax0[i] += hx; ax1[i] += hx; ay0[i] += hy; ay1[i] += hy;
+        ax0[j] -= hx; ax1[j] -= hx; ay0[j] -= hy; ay1[j] -= hy;
+      }
+    }
+    if (!any) break;
+  }
+}
+
 function mtv(polyA, polyB) {
   const axes = getAxes(polyA).concat(getAxes(polyB));
   let minOverlap = Infinity, axis = null;
@@ -1142,6 +1432,12 @@ function startPanOut() {
   });
 }
 
+function pickCutCount() {
+  const min = Math.max(1, settings.camCuts);
+  const max = Math.max(min, settings.camCutsMax);
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
 function zoomDeeperOrReset() {
   const next = pickLargestVisible();
   if (!next) { startPanOut(); return; }
@@ -1152,7 +1448,7 @@ function zoomDeeperOrReset() {
     return;
   }
   cinematicState.phase = 'panIn';
-  cinematicState.cutsRemaining = Math.max(1, settings.camCuts);
+  cinematicState.cutsRemaining = pickCutCount();
   animateCamera(targetCam, settings.camPanDuration, () => {
     if (cinematicState) cinematicState.phase = 'cutting';
   });
@@ -1167,7 +1463,7 @@ function zoomDeeperInteractive() {
     return;
   }
   cinematicState.phase = 'panIn';
-  cinematicState.cutsRemaining = Math.max(1, settings.camCuts);
+  cinematicState.cutsRemaining = pickCutCount();
   animateCamera(targetCam, settings.camPanDuration, () => {
     if (cinematicState) cinematicState.phase = 'cutting';
   });
@@ -1208,7 +1504,7 @@ function interactiveTick() {
   if (!startCutAtPoint(c)) return;
   // Step 2: fix mode never zooms; degenerate camCuts <= 1 = nothing to follow.
   if (settings.cameraMode === 'fix') return;
-  const extraCuts = Math.max(0, settings.camCuts - 1);
+  const extraCuts = Math.max(0, pickCutCount() - 1);
   if (extraCuts === 0) return;
   // Step 3: queue the pan-in (runs once the click cut finishes); subsequent
   // cuts in the zoomed view will all be triggered by further clicks.
@@ -1235,7 +1531,7 @@ function scheduleNextCut() {
       if (!zone) return;
       cinematicState = {
         phase: 'panIn', zone,
-        cutsRemaining: Math.max(1, settings.camCuts),
+        cutsRemaining: pickCutCount(),
       };
       animateCamera(cameraForZone(zone), settings.camPanDuration, () => {
         if (cinematicState) cinematicState.phase = 'cutting';
@@ -1262,7 +1558,7 @@ function scheduleNextCut() {
       if (!zone) return;
       cinematicState = {
         phase: 'panIn',
-        cutsRemaining: Math.max(1, settings.camCuts),
+        cutsRemaining: pickCutCount(),
       };
       animateCamera(cameraForZone(zone), settings.camPanDuration, () => {
         if (cinematicState) cinematicState.phase = 'cutting';
@@ -1338,11 +1634,27 @@ function update(dt) {
   }
 }
 
-function applyStrokeStyle() {
+// World-coords-per-screen-pixel factor for a given shape. With
+// proportionalStroke off, this is just 1/scale (constant on-screen size).
+// With it on, it becomes worldRadius/refRadius — so on-screen size scales
+// linearly with the shape's on-screen radius (camera.scale cancels out).
+function shapeStrokeFactor(s) {
+  if (!settings.proportionalStroke) return 1 / camera.scale;
+  // Proportional: on-screen size scales with the shape's on-screen radius,
+  // but capped so it never exceeds strokeMaxWidth pixels on screen.
+  const onScreenRadius = getBoundingRadius(s) * camera.scale;
+  const refRadius = Math.max(1, settings.strokeRefRadius);
+  let multiplier = onScreenRadius / refRadius;
+  const maxMult = settings.strokeMaxWidth / Math.max(0.1, settings.strokeWidth);
+  if (multiplier > maxMult) multiplier = maxMult;
+  // Convert the on-screen multiplier to world coords for ctx.lineWidth.
+  return multiplier / camera.scale;
+}
+
+function applyStrokeStyle(f) {
   const style = settings.strokeStyle;
-  const s = camera.scale;
-  if (style === 'dashed') ctx.setLineDash([12 / s, 8 / s]);
-  else if (style === 'dotted') ctx.setLineDash([2 / s, 6 / s]);
+  if (style === 'dashed') ctx.setLineDash([12 * f, 8 * f]);
+  else if (style === 'dotted') ctx.setLineDash([2 * f, 6 * f]);
   else ctx.setLineDash([]);
 }
 
@@ -1372,15 +1684,16 @@ function drawShape(s) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.strokeStyle = s.color;
-  ctx.lineWidth = settings.strokeWidth / camera.scale;
-  applyStrokeStyle();
+  const f = shapeStrokeFactor(s);
+  ctx.lineWidth = settings.strokeWidth * f;
+  applyStrokeStyle(f);
   ctx.stroke();
   ctx.setLineDash([]);
   // rivets — single beginPath/fill per shape
   if (settings.strokeStyle === 'rivets') {
     ctx.fillStyle = '#5c5c5c';
-    const spacing = DOT_SPACING / camera.scale;
-    const r = 1.2 / camera.scale;
+    const spacing = DOT_SPACING * f;
+    const r = 1.2 * f;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
       const p1 = visBuf[i], p2 = visBuf[(i + 1) % n];
@@ -1454,8 +1767,12 @@ function shapeIsVisible(s, v) {
       && c.y + r >= v.y0 && c.y - r <= v.y1;
 }
 
-function render() {
+function render(opts) {
   ctx.clearRect(0, 0, W, H);
+  if (opts && opts.fillBackground) {
+    ctx.fillStyle = settings.bgColor;
+    ctx.fillRect(0, 0, W, H);
+  }
   ctx.save();
   ctx.translate(W / 2, H / 2);
   ctx.scale(camera.scale, camera.scale);
@@ -1465,7 +1782,7 @@ function render() {
     if (!shapeIsVisible(s, v)) continue;
     drawShape(s);
   }
-  drawCutLine();
+  if (!opts || opts.drawCutLine !== false) drawCutLine();
   ctx.restore();
 }
 
@@ -1516,9 +1833,18 @@ let lastTime = performance.now();
 function loop(now) {
   const dt = Math.min(50, now - lastTime);
   lastTime = now;
-  recordFrame(dt);
-  update(dt);
-  render();
+  recordFrame(dt); // real time — HUD measures actual perf
+  if (isPaused()) {
+    // crop mode: freeze sim, keep wind silent, draw without cut line
+    audio.ensureWind(false);
+    render({ drawCutLine: false });
+  } else {
+    // simulation time scales with the speed multiplier; everything that
+    // accumulates dt (anim.t, fade.elapsed, cutState.t, cameraAnim.t,
+    // nextCutDelay) runs proportionally faster.
+    update(dt * (settings.speed || 1));
+    render();
+  }
   updateHUD();
   requestAnimationFrame(loop);
 }
@@ -1684,11 +2010,25 @@ function resetSettings() {
   Object.assign(settings, defaultSettings);
   for (const f of widgetSyncs) f();
   applyBg();
+  applyVignette();
   applyCamMode();
+  applyHint();
+  updateModeButton();
+  updateSpeedButton();
   saveSettings();
 }
 
 function applyBg() { document.body.style.background = settings.bgColor; }
+function applyVignette() {
+  const el = document.getElementById('vignette');
+  if (!el) return;
+  if (settings.vignette > 0) {
+    el.hidden = false;
+    el.style.setProperty('--vignette-blur', settings.vignette + 'px');
+  } else {
+    el.hidden = true;
+  }
+}
 
 function applyCamMode() {
   document.body.classList.toggle('no-cam', settings.cameraMode === 'fix');
@@ -1723,6 +2063,8 @@ function applyInteractiveState() {
 }
 
 bindRange('p_count',          'shapeCount',     fmtNum);
+bindRange('p_shapeInset',     'shapeInset',     v => Math.round(v * 100) + '%');
+bindRange('p_shapeGap',       'shapeGap',       fmtPx);
 bindSelect('p_cameraMode',    'cameraMode',     () => {
   applyCamMode();
   cinematicState = null;
@@ -1735,7 +2077,24 @@ bindCheckbox('p_interactive', 'interactive',    applyInteractiveState);
 bindRange('p_camPadding',     'camPadding',     fmtPx);
 bindRange('p_camMaxZoom',     'camMaxZoom',     fmtFloat);
 bindRange('p_camPanDuration', 'camPanDuration', fmtMs);
-bindRange('p_camCuts',        'camCuts',        fmtNum);
+bindRange('p_camCuts',        'camCuts',        fmtNum, () => {
+  if (settings.camCutsMax < settings.camCuts) {
+    settings.camCutsMax = settings.camCuts;
+    const el = document.getElementById('p_camCutsMax');
+    const val = document.getElementById('v_camCutsMax');
+    if (el) el.value = settings.camCutsMax;
+    if (val) val.textContent = fmtNum(settings.camCutsMax);
+  }
+});
+bindRange('p_camCutsMax',     'camCutsMax',     fmtNum, () => {
+  if (settings.camCuts > settings.camCutsMax) {
+    settings.camCuts = settings.camCutsMax;
+    const el = document.getElementById('p_camCuts');
+    const val = document.getElementById('v_camCuts');
+    if (el) el.value = settings.camCuts;
+    if (val) val.textContent = fmtNum(settings.camCuts);
+  }
+});
 bindRange('p_camOverviewHold','camOverviewHold',fmtMs);
 bindRange('p_lineSpeed',      'lineSpeed',      fmtMs);
 bindRange('p_animDur',        'animDuration',   fmtMs);
@@ -1770,6 +2129,10 @@ bindRange('p_fadeMax',        'fadeMax',        fmtSec, () => {
 bindColor('p_bg',             'bgColor',        applyBg);
 bindColor('p_stroke',         'strokeColor');
 bindRange('p_strokeWidth',    'strokeWidth',    fmtPx);
+bindCheckbox('p_proportionalStroke', 'proportionalStroke');
+bindRange('p_strokeRefRadius', 'strokeRefRadius', fmtPx);
+bindRange('p_strokeMaxWidth', 'strokeMaxWidth', fmtPx);
+bindRange('p_vignette',       'vignette',       fmtPx, applyVignette);
 bindSelect('p_strokeStyle',   'strokeStyle');
 bindCheckbox('p_audioOn',     'audioOn',        () => {
   audio.applyMasterVolume();
@@ -1789,13 +2152,205 @@ document.getElementById('modeBtn').addEventListener('click', () => {
   applyInteractiveState();
   saveSettings();
 });
+
+const SPEED_VALUES = [0.5, 1, 1.5, 2, 3];
+function updateSpeedButton() {
+  const btn = document.getElementById('speedBtn');
+  if (!btn) return;
+  const v = settings.speed || 1;
+  btn.textContent = (Number.isInteger(v) ? v : v.toFixed(1)) + '×';
+}
+document.getElementById('speedBtn').addEventListener('click', () => {
+  const cur = settings.speed || 1;
+  let i = SPEED_VALUES.indexOf(cur);
+  if (i < 0) i = SPEED_VALUES.indexOf(1);
+  settings.speed = SPEED_VALUES[(i + 1) % SPEED_VALUES.length];
+  updateSpeedButton();
+  saveSettings();
+});
+
+// ---------- interactive export (crop + fit-all) ----------
+let cropState = null; // null | { dragging, startScreen, endScreen }
+function isPaused() { return cropState !== null; }
+
+function downloadPng(dataUrl, suffix) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = `slice-${suffix}-${Date.now()}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// Render to an offscreen canvas at exportScale× the requested CSS dimensions,
+// then snapshot it as a PNG. Globals (canvas, ctx, W, H, camera) are swapped
+// in for the duration so the existing render()/drawShape pipeline doesn't
+// need to know it's being asked to draw somewhere else.
+function exportAtCssDims(cssW, cssH, opts, camOverride) {
+  const scale = Math.max(1, settings.exportScale || 3);
+  const off = document.createElement('canvas');
+  off.width = Math.max(1, Math.round(cssW * scale));
+  off.height = Math.max(1, Math.round(cssH * scale));
+  const offCtx = off.getContext('2d');
+  offCtx.setTransform(scale, 0, 0, scale, 0, 0);
+  const savedCanvas = canvas, savedCtx = ctx;
+  const savedW = W, savedH = H;
+  const savedCamera = { ...camera };
+  canvas = off; ctx = offCtx;
+  W = cssW; H = cssH;
+  if (camOverride) Object.assign(camera, camOverride);
+  render(opts);
+  const dataUrl = off.toDataURL('image/png');
+  canvas = savedCanvas; ctx = savedCtx;
+  W = savedW; H = savedH;
+  Object.assign(camera, savedCamera);
+  return dataUrl;
+}
+
+function snapshotFitAll() {
+  if (!shapes.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of shapes) {
+    const c = getCentroid(s);
+    const r = getBoundingRadius(s);
+    if (c.x - r < x0) x0 = c.x - r;
+    if (c.y - r < y0) y0 = c.y - r;
+    if (c.x + r > x1) x1 = c.x + r;
+    if (c.y + r > y1) y1 = c.y + r;
+  }
+  if (!isFinite(x0)) return;
+  const screenPad = 40;
+  const wW = x1 - x0, wH = y1 - y0;
+  const sX = (W - 2 * screenPad) / Math.max(1, wW);
+  const sY = (H - 2 * screenPad) / Math.max(1, wH);
+  const cam = {
+    cx: (x0 + x1) / 2,
+    cy: (y0 + y1) / 2,
+    scale: Math.max(0.05, Math.min(sX, sY)),
+  };
+  const dataUrl = exportAtCssDims(W, H, { fillBackground: true, drawCutLine: false }, cam);
+  downloadPng(dataUrl, 'fit');
+}
+
+function snapshotCrop() {
+  const r = cropRectGeom();
+  if (!r || r.w < 5 || r.h < 5) return;
+  // Map the screen rect to a world rect using the current (live) camera.
+  const wp0 = screenToWorld(r.x, r.y);
+  const wp1 = screenToWorld(r.x + r.w, r.y + r.h);
+  const wW = wp1.x - wp0.x, wH = wp1.y - wp0.y;
+  const cam = {
+    cx: (wp0.x + wp1.x) / 2,
+    cy: (wp0.y + wp1.y) / 2,
+    scale: Math.min(r.w / Math.max(1e-6, wW), r.h / Math.max(1e-6, wH)),
+  };
+  const dataUrl = exportAtCssDims(r.w, r.h, { fillBackground: true, drawCutLine: false }, cam);
+  downloadPng(dataUrl, 'crop');
+}
+
+function cropRectGeom() {
+  if (!cropState || !cropState.startScreen || !cropState.endScreen) return null;
+  const s = cropState.startScreen, e = cropState.endScreen;
+  return {
+    x: Math.min(s.x, e.x),
+    y: Math.min(s.y, e.y),
+    w: Math.abs(e.x - s.x),
+    h: Math.abs(e.y - s.y),
+  };
+}
+
+function updateCropUI() {
+  const rectEl = document.getElementById('cropRect');
+  const okBtn = document.getElementById('cropOkBtn');
+  const r = cropRectGeom();
+  if (r && (r.w > 0 || r.h > 0)) {
+    rectEl.hidden = false;
+    rectEl.style.left = r.x + 'px';
+    rectEl.style.top = r.y + 'px';
+    rectEl.style.width = r.w + 'px';
+    rectEl.style.height = r.h + 'px';
+    okBtn.disabled = !(r.w >= 5 && r.h >= 5);
+  } else {
+    rectEl.hidden = true;
+    okBtn.disabled = true;
+  }
+}
+
+function enterCropMode() {
+  // settle the scene so the snapshot doesn't capture mid-flight pieces or a
+  // hovering cut line; abort any camera animation in flight as well.
+  for (const s of shapes) finalizeAnim(s);
+  cutState = null;
+  cinematicState = null;
+  cameraAnim = null;
+  pendingClick = null;
+  audio.ensureWind(false);
+  cropState = { dragging: false, startScreen: null, endScreen: null };
+  document.getElementById('cropOverlay').hidden = false;
+  document.body.classList.add('crop-mode');
+  updateCropUI();
+}
+
+function exitCropMode() {
+  cropState = null;
+  document.getElementById('cropOverlay').hidden = true;
+  document.body.classList.remove('crop-mode');
+  // give the auto loop a small breather before resuming
+  nextCutDelay = 300;
+}
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+  if (isPaused()) exitCropMode(); else enterCropMode();
+});
+
+const overlay = document.getElementById('cropOverlay');
+overlay.addEventListener('pointerdown', e => {
+  if (!cropState) return;
+  if (e.target.closest('.crop-toolbar')) return; // clicks on toolbar pass through
+  e.preventDefault();
+  overlay.setPointerCapture(e.pointerId);
+  cropState.dragging = true;
+  cropState.startScreen = { x: e.clientX, y: e.clientY };
+  cropState.endScreen = { x: e.clientX, y: e.clientY };
+  updateCropUI();
+});
+overlay.addEventListener('pointermove', e => {
+  if (!cropState || !cropState.dragging) return;
+  cropState.endScreen = { x: e.clientX, y: e.clientY };
+  updateCropUI();
+});
+overlay.addEventListener('pointerup', e => {
+  if (!cropState) return;
+  cropState.dragging = false;
+  try { overlay.releasePointerCapture(e.pointerId); } catch (_) {}
+  updateCropUI();
+});
+overlay.addEventListener('pointercancel', () => {
+  if (cropState) cropState.dragging = false;
+});
+
+document.getElementById('cropOkBtn').addEventListener('click', () => {
+  snapshotCrop();
+  exitCropMode();
+});
+document.getElementById('cropFitBtn').addEventListener('click', () => {
+  snapshotFitAll();
+  exitCropMode();
+});
+document.getElementById('cropCancelBtn').addEventListener('click', exitCropMode);
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && isPaused()) { e.preventDefault(); exitCropMode(); }
+});
 document.getElementById('resetBtn').addEventListener('click', reset);
 document.getElementById('resetSettingsBtn').addEventListener('click', resetSettings);
 
 applyBg();
+applyVignette();
 applyCamMode();
 applyHint();
 updateModeButton();
+updateSpeedButton();
 reset();
 requestAnimationFrame(loop);
 </script>

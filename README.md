@@ -26,9 +26,17 @@ Demo here: https://serge-fantino.github.io/AIChallenge/
 A single self-contained `index.html` (vanilla JS + Canvas, no dependencies)
 that builds on the original challenge with several layered features:
 
-- **Initial scene**: ~10 non-overlapping random shapes (circles approximated as
-  28-segment polygons, triangles, parallelograms) placed via rejection sampling
-  with bounding-circle separation.
+- **Initial scene**: ~20 random shapes (circles, triangles, parallelograms,
+  pentagons, hexagons, heptagons, octagons — slightly jittered per vertex so
+  they don't look perfectly regular) placed by a **phyllotaxis spiral**
+  starting at the canvas centre and growing outward at the golden angle —
+  hex-packing density, organic look, deterministic centre-out fill. Once the
+  spiral has placed everything (or hit the edge of the central band), the
+  same SAT relaxation used during cuts runs in-place to push apart any
+  pairs whose vertex jitter caused a residual overlap. Shape size scales
+  with the **full** canvas area and shape count (not the central band), so
+  changing the centred margin doesn't shrink the pieces — it just leaves
+  fewer slots, and the spiral places fewer shapes if it can't fit them all.
 - **Convex polygon clipping**: each cut line splits any intersecting convex
   polygon into two convex halves by walking edges, classifying vertices by
   signed distance to the line, and inserting interpolated intersection points.
@@ -94,6 +102,29 @@ that builds on the original challenge with several layered features:
     `Coupes/zone` clicks, the camera advances (pan-out in Pan mode, zoom
     deeper into the largest visible piece in Zoom mode), and the next
     click in the new view continues the cycle.
+- **Speed multiplier** (top-left button next to DEMO / PLAY, cycles 0.5× /
+  1× / 1.5× / 2× / 3×): scales the simulation `dt`. Every time-based value
+  (line draw, animation duration, pan duration, glow decay, fade, gesture
+  inactivity, …) speeds up proportionally; HUD frame-time stays honest
+  (recorded with real `dt`).
+- **Vignette**: a CSS overlay (`backdrop-filter: blur` masked by a radial
+  gradient) that softens the edges of the canvas without affecting the
+  rendered pixels — gives a focus-on-center look while letting pieces
+  extending past the central band fade out gracefully. Configurable size,
+  0 = off. Not included in PNG exports.
+- **Centred placement & spacing controls**: `Marge centrale` (% of each
+  axis on each side — central rect where shape centres can go) and
+  `Espacement` (px of guaranteed clearance between bounding circles of
+  any two adjacent shapes).
+- **Randomised cuts per zone**: the camera cycle uses `Coupes min` /
+  `Coupes max` (default 3 / 6) — a uniform random pick per cluster — so
+  each zone gets a different rhythm before the camera advances.
+- **PNG export** (⤓ button, top right): pauses the simulation and shows a
+  full-screen overlay. Drag a region to crop, or use **Tout cadrer** to
+  auto-fit every shape into the frame. The export re-renders into an
+  offscreen canvas at `exportScale×` the live resolution (default 3×, so
+  ~6K from a 1920 viewport) — strokes scale up too, no upscaling artefacts,
+  no vignette baked in.
 - **Free-look gestures** (work in both DEMO and PLAY):
   - Two-finger drag on touch devices = pan; pinch = zoom.
   - Trackpad two-finger scroll = pan; pinch (or `ctrl`/`cmd`+wheel) = zoom
@@ -117,12 +148,14 @@ that builds on the original challenge with several layered features:
 | Group       | Parameter         | Notes                                                  |
 | ----------- | ----------------- | ------------------------------------------------------ |
 | Setup       | Formes            | initial shape count (apply via *Recommencer*)          |
+| Setup       | Marge centrale    | % of each axis as centred-band inset for placement     |
+| Setup       | Espacement        | min clearance between adjacent shapes' bounding circles|
 | Setup       | Mode caméra       | Fixe / Pan / Zoom infini                               |
 | Setup       | Interactif        | toggle DEMO ↔ PLAY (top-left button mirrors this)      |
 | Caméra      | Padding           | extra margin around the framed cluster (screen px)     |
 | Caméra      | Zoom max          | zoom cap (used in Pan mode framing)                    |
 | Caméra      | Vitesse pan       | pan-in / pan-out duration                              |
-| Caméra      | Coupes/zone       | number of successive cuts per zoom level               |
+| Caméra      | Coupes min / max  | random cut count per cluster, uniform in the range     |
 | Caméra      | Pause vue         | hold time at the overview between cycles               |
 | Coupe       | Vitesse           | piece animation total duration                         |
 | Coupe       | Mode              | Rigide / Jelly / Vague / Squash                        |
@@ -140,6 +173,10 @@ that builds on the original challenge with several layered features:
 | Apparence   | Fond              | background color                                       |
 | Apparence   | Trait             | base stroke color (= fade target)                      |
 | Apparence   | Épaisseur         | stroke width (in screen px, constant under zoom)       |
+| Apparence   | Trait proportionnel | stroke thickness scales with each piece's on-screen radius |
+| Apparence   | Réf. trait        | reference radius for the proportional stroke           |
+| Apparence   | Trait max         | absolute cap on stroke thickness (proportional mode)   |
+| Apparence   | Vignette          | radial blur halo width at the edges (0 = off)          |
 | Apparence   | Style             | rivets / solid / dashed / dotted                       |
 | Son         | Activé            | master mute toggle                                     |
 | Son         | Volume            | master volume (0–100%)                                 |
@@ -186,8 +223,8 @@ Open `index.html` in any modern browser. No build step, no server.
 - Click the canvas, or press `space` / `r`, to reset (DEMO mode).
 - In PLAY mode, each click on the canvas triggers a cut at that point.
 - Two-finger drag (touch) or trackpad scroll = pan; pinch / `ctrl`+wheel = zoom.
-- Click the top-left **DEMO / PLAY** button to switch modes.
-- Click ⚙ (top right) to open the settings panel.
+- Top-left: **DEMO / PLAY** toggle and the **speed** cycler (0.5×–3×).
+- Top-right: ⤓ exports a PNG (drag a region or *Tout cadrer*) and ⚙ opens the settings.
 - *Recommencer* regenerates the scene; *Défauts* restores the default settings.
 
 ## Notes
