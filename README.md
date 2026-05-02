@@ -189,20 +189,36 @@ keep things smooth as the piece count grows. A small HUD in the bottom
 right shows the current count and frame-rate so you can watch the
 degradation in real time.
 
-- **SAT broad-phase**: each item gets an axis-aligned bounding box (`Float64Array`s,
-  no objects) before the relaxation loop; pairs whose AABBs don't overlap
-  skip the expensive `mtv()` call. Bounding boxes are updated incrementally
-  after each push (uniform translation = same shift on the box). With ~100
-  pieces this typically replaces ~5000 SAT tests per iteration with 50–200,
-  giving ~20–50× speedup on the cut step.
+- **SAT broad-phase via spatial grid**: a hash grid keyed by `(cellX, cellY)`
+  buckets the AABBs at each relaxation iteration; only intra-bucket pairs
+  are tested. Turns the `O(N²)` sweep into roughly `O(N × k)` where `k` is
+  the average bucket size. AABB scratch arrays (`Float64Array`s) and the
+  grid `Map` are module-level and reused across cuts, so no per-call
+  allocations. With ~5000 pieces this drops from millions of pair tests
+  per iteration to a few thousand.
+- **Cached per-shape SAT axes**: edge normals are translation-invariant, so
+  they're computed once per shape at the start of each relaxation and
+  reused across all iterations (instead of `getAxes()` being called twice
+  inside every `mtv()` call).
+- **Allocation-free MTV**: `projectInto(pts, axx, axy, out)` writes the
+  min/max projection into a shared scratch object instead of returning a
+  fresh `[mn, mx]` array per axis — avoids hundreds of millions of tiny
+  array allocations per cut at high N.
 - **Cached centroid / bounding radius** per shape (`s._centroid`,
   `s._boundingRadius`), lazily computed and reused by all the camera /
   zone / framing helpers. Cleared/updated in place when the animation bakes
   (translation only — bounding radius is invariant).
-- **Viewport culling**: each frame, shapes whose bounding circle (centroid
-  + radius + the magnitude of any in-flight animation translation) lies
-  entirely outside `visibleRect()` are skipped at render. Big win in zoom
-  mode, where most pieces are off-screen.
+- **Viewport culling + tiny-shape culling**: each frame, shapes whose
+  bounding circle lies entirely outside `visibleRect()` *or* whose
+  on-screen radius is smaller than ~1.5 px are skipped at render — the
+  former wins big in zoom mode, the latter wins big at scenes with tens
+  of thousands of fragments.
+- **`Path2D` cache for settled shapes**: non-animating shapes build their
+  polygon once into a `Path2D` and stroke it via `ctx.stroke(s._path2D)`
+  thereafter — no `beginPath` / 28× `lineTo` / `closePath` per frame.
+  The cache is invalidated when the animation bakes (the only time the
+  shape's points change). At ~30k shapes this is the single biggest
+  per-frame win.
 - **Allocation-free per-point animation**: the per-mode functions
   (`rigidPointInto`, `jellyInto`, `waveInto`, `squashInto`) write into a
   caller-provided `out` object instead of returning a new `{x, y}`. The
@@ -211,6 +227,16 @@ degradation in real time.
 - **Batched rivets**: the rivets along a polygon's perimeter are now drawn
   in a single `beginPath` / `fill` per shape, with `moveTo` between each
   arc to keep them disjoint. Cuts ~10× the number of fill draw calls.
+- **Idle throttling**: when `scheduleNextCut()` finishes without launching
+  anything (no cuttable shape, no camera move queued), it backs off for
+  500 ms instead of being polled at 60 Hz. Saves Mops/sec when the demo
+  has finally exhausted everything cuttable, leaving CPU for the
+  in-flight animations to settle gracefully.
+- **Lower `MIN_AREA` + larger `ZONE_TOLERANCE`**: the cuttable threshold
+  is 50 px² (≈ radius 4) and zone-membership tolerance is 250 px, so
+  thousands of cumulative cuts can keep happening past the previous
+  ~10k-piece exhaustion limit (now reaches 30k+ at 60 fps on a typical
+  laptop before render becomes the bottleneck).
 - **Performance HUD** (bottom right): pieces count, smoothed FPS + frame
   time over the last 60 frames, and a "Charge" ratio of current FPS vs the
   best FPS observed in the session. Goes orange below 80% of peak and red

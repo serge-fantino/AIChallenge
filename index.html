@@ -610,11 +610,17 @@ function initAudioOnce() {
 document.addEventListener('pointerdown', initAudioOnce);
 document.addEventListener('keydown', initAudioOnce);
 
-const MIN_AREA = 250;
+const MIN_AREA = 50;
 const DOT_SPACING = 14;
 const FIRST_CUT_DELAY = 600;
-const ZONE_TOLERANCE = 60;
-const GESTURE_INACTIVITY_DELAY = 3000; // extra radius around an initial shape to find descendants
+// Generous tolerance so descendants that drifted from their original zone
+// (cumulative SAT pushes after thousands of cuts) are still considered
+// part of that zone.
+const ZONE_TOLERANCE = 250;
+const GESTURE_INACTIVITY_DELAY = 3000;
+// Throttle the auto-scheduler when it can't find anything to do — avoids
+// burning CPU re-running the same empty zone search at 60 Hz.
+const IDLE_RECHECK_MS = 500;
 
 // `canvas` and `ctx` are mutable so the export path can temporarily swap
 // them out for an offscreen high-resolution canvas, run render(), snapshot,
@@ -994,73 +1000,159 @@ function getAxes(pts) {
   }
   return axes;
 }
-function projectOnto(pts, ax) {
+
+// Reusable SAT scratch buffers (avoid per-call allocations at large N).
+let _aabbX0 = null, _aabbY0 = null, _aabbX1 = null, _aabbY1 = null;
+const _satGrid = new Map();
+const _projOut = { mn: 0, mx: 0 };
+
+function ensureAABBBuffers(n) {
+  if (_aabbX0 && _aabbX0.length >= n) return;
+  const sz = Math.max(n, 256);
+  _aabbX0 = new Float64Array(sz);
+  _aabbY0 = new Float64Array(sz);
+  _aabbX1 = new Float64Array(sz);
+  _aabbY1 = new Float64Array(sz);
+}
+
+function computeAABBAt(pts, i) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let k = 0; k < pts.length; k++) {
+    const p = pts[k];
+    if (p.x < x0) x0 = p.x;
+    if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.y > y1) y1 = p.y;
+  }
+  _aabbX0[i] = x0; _aabbY0[i] = y0; _aabbX1[i] = x1; _aabbY1[i] = y1;
+}
+
+function avgAABBDiag(N) {
+  if (N === 0) return 50;
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    const w = _aabbX1[i] - _aabbX0[i];
+    const h = _aabbY1[i] - _aabbY0[i];
+    sum += w > h ? w : h;
+  }
+  return sum / N;
+}
+
+// Spatial hash for SAT broad-phase: shapes registered in every cell their
+// AABB overlaps. Pair tests then iterate only intra-bucket pairs — turns
+// the O(N²) sweep into roughly O(N × k) where k is the average bucket size.
+function rebuildSATGrid(N, cellSize) {
+  _satGrid.clear();
+  const inv = 1 / cellSize;
+  for (let i = 0; i < N; i++) {
+    const c0x = Math.floor(_aabbX0[i] * inv);
+    const c0y = Math.floor(_aabbY0[i] * inv);
+    const c1x = Math.floor(_aabbX1[i] * inv);
+    const c1y = Math.floor(_aabbY1[i] * inv);
+    for (let cy = c0y; cy <= c1y; cy++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        const key = cx + ',' + cy;
+        let bucket = _satGrid.get(key);
+        if (!bucket) { bucket = []; _satGrid.set(key, bucket); }
+        bucket.push(i);
+      }
+    }
+  }
+}
+
+// Project polygon onto an axis (axx, axy). Writes mn/mx into _projOut to
+// avoid allocating an array per call (this is in the inner SAT loop).
+function projectInto(pts, axx, axy, out) {
   let mn = Infinity, mx = -Infinity;
-  for (const p of pts) {
-    const d = p.x * ax.x + p.y * ax.y;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const d = p.x * axx + p.y * axy;
     if (d < mn) mn = d;
     if (d > mx) mx = d;
   }
-  return [mn, mx];
+  out.mn = mn; out.mx = mx;
 }
-// In-place SAT relaxation: pushes overlapping shapes apart so none of their
-// polygons intersect. Uses the same AABB broad-phase + MTV approach as the
-// cut-time relaxation in applyCut, but mutates `s.points` directly instead
-// of accumulating offsets on items.
+
+// MTV with caller-provided axes (so they can be cached per shape across
+// iterations: edge normals are translation-invariant). Returns null on
+// separation, else the push vector for polyA away from polyB.
+function mtvAxes(polyA, polyB, axesA, axesB) {
+  let minOverlap = Infinity, axisX = 0, axisY = 0;
+  for (let k = 0; k < axesA.length; k++) {
+    const ax = axesA[k];
+    projectInto(polyA, ax.x, ax.y, _projOut);
+    const a1 = _projOut.mn, a2 = _projOut.mx;
+    projectInto(polyB, ax.x, ax.y, _projOut);
+    const b1 = _projOut.mn, b2 = _projOut.mx;
+    const o = (a2 < b2 ? a2 : b2) - (a1 > b1 ? a1 : b1);
+    if (o <= 0.5) return null;
+    if (o < minOverlap) { minOverlap = o; axisX = ax.x; axisY = ax.y; }
+  }
+  for (let k = 0; k < axesB.length; k++) {
+    const ax = axesB[k];
+    projectInto(polyA, ax.x, ax.y, _projOut);
+    const a1 = _projOut.mn, a2 = _projOut.mx;
+    projectInto(polyB, ax.x, ax.y, _projOut);
+    const b1 = _projOut.mn, b2 = _projOut.mx;
+    const o = (a2 < b2 ? a2 : b2) - (a1 > b1 ? a1 : b1);
+    if (o <= 0.5) return null;
+    if (o < minOverlap) { minOverlap = o; axisX = ax.x; axisY = ax.y; }
+  }
+  const ca = centroid(polyA), cb = centroid(polyB);
+  if ((ca.x - cb.x) * axisX + (ca.y - cb.y) * axisY < 0) {
+    axisX = -axisX; axisY = -axisY;
+  }
+  return { x: axisX * minOverlap, y: axisY * minOverlap };
+}
+
+// Backward-compat MTV (uncached axes) — only used by callers that don't
+// have access to a cache; the relaxation loops use mtvAxes directly.
+function mtv(polyA, polyB) {
+  return mtvAxes(polyA, polyB, getAxes(polyA), getAxes(polyB));
+}
+
+// In-place SAT relaxation on a flat array of shapes. Mutates s.points to
+// resolve any pairwise polygon overlaps. Uses the spatial-grid broad-phase
+// and per-shape cached axes — same machinery as the cut-time relaxation.
 function relaxOverlapsInPlace(shapesArr, maxIter) {
   const N = shapesArr.length;
   if (N < 2) return;
-  const ax0 = new Float64Array(N), ay0 = new Float64Array(N);
-  const ax1 = new Float64Array(N), ay1 = new Float64Array(N);
+  ensureAABBBuffers(N);
+  const itemAxes = new Array(N);
   for (let i = 0; i < N; i++) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     const pts = shapesArr[i].points;
-    for (let k = 0; k < pts.length; k++) {
-      const p = pts[k];
-      if (p.x < x0) x0 = p.x;
-      if (p.x > x1) x1 = p.x;
-      if (p.y < y0) y0 = p.y;
-      if (p.y > y1) y1 = p.y;
-    }
-    ax0[i] = x0; ay0[i] = y0; ax1[i] = x1; ay1[i] = y1;
+    computeAABBAt(pts, i);
+    itemAxes[i] = getAxes(pts);
   }
+  const cellSize = Math.max(20, avgAABBDiag(N));
   const ITERS = maxIter || 60;
   for (let iter = 0; iter < ITERS; iter++) {
+    rebuildSATGrid(N, cellSize);
     let any = false;
-    for (let i = 0; i < N; i++) {
-      for (let j = i + 1; j < N; j++) {
-        if (ax1[i] < ax0[j] || ax1[j] < ax0[i] ||
-            ay1[i] < ay0[j] || ay1[j] < ay0[i]) continue;
-        const v = mtv(shapesArr[i].points, shapesArr[j].points);
-        if (!v) continue;
-        any = true;
-        const hx = v.x * 0.5, hy = v.y * 0.5;
-        const ti = shapesArr[i].points, tj = shapesArr[j].points;
-        for (let k = 0; k < ti.length; k++) { ti[k].x += hx; ti[k].y += hy; }
-        for (let k = 0; k < tj.length; k++) { tj[k].x -= hx; tj[k].y -= hy; }
-        ax0[i] += hx; ax1[i] += hx; ay0[i] += hy; ay1[i] += hy;
-        ax0[j] -= hx; ax1[j] -= hx; ay0[j] -= hy; ay1[j] -= hy;
+    for (const bucket of _satGrid.values()) {
+      const blen = bucket.length;
+      if (blen < 2) continue;
+      for (let bi = 0; bi < blen; bi++) {
+        const i = bucket[bi];
+        for (let bj = bi + 1; bj < blen; bj++) {
+          const j = bucket[bj];
+          if (_aabbX1[i] < _aabbX0[j] || _aabbX1[j] < _aabbX0[i] ||
+              _aabbY1[i] < _aabbY0[j] || _aabbY1[j] < _aabbY0[i]) continue;
+          const v = mtvAxes(shapesArr[i].points, shapesArr[j].points,
+                            itemAxes[i], itemAxes[j]);
+          if (!v) continue;
+          any = true;
+          const hx = v.x * 0.5, hy = v.y * 0.5;
+          const ti = shapesArr[i].points, tj = shapesArr[j].points;
+          for (let k = 0; k < ti.length; k++) { ti[k].x += hx; ti[k].y += hy; }
+          for (let k = 0; k < tj.length; k++) { tj[k].x -= hx; tj[k].y -= hy; }
+          _aabbX0[i] += hx; _aabbX1[i] += hx; _aabbY0[i] += hy; _aabbY1[i] += hy;
+          _aabbX0[j] -= hx; _aabbX1[j] -= hx; _aabbY0[j] -= hy; _aabbY1[j] -= hy;
+        }
       }
     }
     if (!any) break;
   }
-}
-
-function mtv(polyA, polyB) {
-  const axes = getAxes(polyA).concat(getAxes(polyB));
-  let minOverlap = Infinity, axis = null;
-  for (const ax of axes) {
-    const [a1, a2] = projectOnto(polyA, ax);
-    const [b1, b2] = projectOnto(polyB, ax);
-    const o = Math.min(a2, b2) - Math.max(a1, b1);
-    if (o <= 0.5) return null;
-    if (o < minOverlap) { minOverlap = o; axis = ax; }
-  }
-  const ca = centroid(polyA), cb = centroid(polyB);
-  if ((ca.x - cb.x) * axis.x + (ca.y - cb.y) * axis.y < 0) {
-    axis = { x: -axis.x, y: -axis.y };
-  }
-  return { x: axis.x * minOverlap, y: axis.y * minOverlap };
 }
 
 // ---------- easings ----------
@@ -1336,41 +1428,42 @@ function applyCut(line) {
       dx: -dir * line.a * sep, dy: -dir * line.b * sep, spin: -spin, isCut: true });
   }
   const targets = items.map(it => it.basePoints.map(p => ({ x: p.x + it.dx, y: p.y + it.dy })));
-  // AABB broad-phase: per-item bounding box, updated incrementally on push
+  // SAT broad-phase via spatial grid (O(N×k) instead of O(N²)) + cached
+  // per-item axes (edge normals are translation-invariant, so the axes
+  // computed once stay valid across all relaxation iterations).
   const N = items.length;
-  const ax0 = new Float64Array(N), ay0 = new Float64Array(N);
-  const ax1 = new Float64Array(N), ay1 = new Float64Array(N);
+  ensureAABBBuffers(N);
+  const itemAxes = new Array(N);
   for (let i = 0; i < N; i++) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const pts = targets[i];
-    for (let k = 0; k < pts.length; k++) {
-      const p = pts[k];
-      if (p.x < x0) x0 = p.x;
-      if (p.x > x1) x1 = p.x;
-      if (p.y < y0) y0 = p.y;
-      if (p.y > y1) y1 = p.y;
-    }
-    ax0[i] = x0; ay0[i] = y0; ax1[i] = x1; ay1[i] = y1;
+    computeAABBAt(targets[i], i);
+    itemAxes[i] = getAxes(targets[i]);
   }
+  const cellSize = Math.max(20, avgAABBDiag(N));
   const MAX_ITER = 40;
   for (let iter = 0; iter < MAX_ITER; iter++) {
+    rebuildSATGrid(N, cellSize);
     let any = false;
-    for (let i = 0; i < N; i++) {
-      for (let j = i + 1; j < N; j++) {
-        // broad-phase reject
-        if (ax1[i] < ax0[j] || ax1[j] < ax0[i] ||
-            ay1[i] < ay0[j] || ay1[j] < ay0[i]) continue;
-        const v = mtv(targets[i], targets[j]);
-        if (!v) continue;
-        any = true;
-        const hx = v.x * 0.5, hy = v.y * 0.5;
-        items[i].dx += hx; items[i].dy += hy;
-        items[j].dx -= hx; items[j].dy -= hy;
-        const ti = targets[i], tj = targets[j];
-        for (let k = 0; k < ti.length; k++) { ti[k].x += hx; ti[k].y += hy; }
-        for (let k = 0; k < tj.length; k++) { tj[k].x -= hx; tj[k].y -= hy; }
-        ax0[i] += hx; ax1[i] += hx; ay0[i] += hy; ay1[i] += hy;
-        ax0[j] -= hx; ax1[j] -= hx; ay0[j] -= hy; ay1[j] -= hy;
+    for (const bucket of _satGrid.values()) {
+      const blen = bucket.length;
+      if (blen < 2) continue;
+      for (let bi = 0; bi < blen; bi++) {
+        const i = bucket[bi];
+        for (let bj = bi + 1; bj < blen; bj++) {
+          const j = bucket[bj];
+          if (_aabbX1[i] < _aabbX0[j] || _aabbX1[j] < _aabbX0[i] ||
+              _aabbY1[i] < _aabbY0[j] || _aabbY1[j] < _aabbY0[i]) continue;
+          const v = mtvAxes(targets[i], targets[j], itemAxes[i], itemAxes[j]);
+          if (!v) continue;
+          any = true;
+          const hx = v.x * 0.5, hy = v.y * 0.5;
+          items[i].dx += hx; items[i].dy += hy;
+          items[j].dx -= hx; items[j].dy -= hy;
+          const ti = targets[i], tj = targets[j];
+          for (let k = 0; k < ti.length; k++) { ti[k].x += hx; ti[k].y += hy; }
+          for (let k = 0; k < tj.length; k++) { tj[k].x -= hx; tj[k].y -= hy; }
+          _aabbX0[i] += hx; _aabbX1[i] += hx; _aabbY0[i] += hy; _aabbY1[i] += hy;
+          _aabbX0[j] -= hx; _aabbX1[j] -= hx; _aabbY0[j] -= hy; _aabbY1[j] -= hy;
+        }
       }
     }
     if (!any) break;
@@ -1597,6 +1690,7 @@ function update(dt) {
         }
         if (s._centroid) { s._centroid.x += dx; s._centroid.y += dy; }
         // _boundingRadius unchanged under uniform translation
+        s._path2D = null; // points moved → next frame rebuilds the cached path
         s.anim = null;
       }
     }
@@ -1630,6 +1724,10 @@ function update(dt) {
       nextCutDelay -= dt;
     } else {
       scheduleNextCut();
+      // If nothing was scheduled (no cuttable shape, no camera move), don't
+      // re-poll every frame — back off for IDLE_RECHECK_MS so we don't burn
+      // CPU iterating shapes for nothing.
+      if (!cutState && !cameraAnim) nextCutDelay = IDLE_RECHECK_MS;
     }
   }
 }
@@ -1668,45 +1766,77 @@ function drawShape(s) {
   const pts = s.points;
   const n = pts.length;
   const anim = s.anim;
-  ensureVisBuf(n);
-  if (anim) {
-    for (let i = 0; i < n; i++) animatedPointInto(pts[i], anim, visBuf[i]);
-  } else {
-    for (let i = 0; i < n; i++) {
-      visBuf[i].x = pts[i].x; visBuf[i].y = pts[i].y;
-    }
-  }
-  // outline
-  ctx.beginPath();
-  ctx.moveTo(visBuf[0].x, visBuf[0].y);
-  for (let i = 1; i < n; i++) ctx.lineTo(visBuf[i].x, visBuf[i].y);
-  ctx.closePath();
+  const f = shapeStrokeFactor(s);
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.strokeStyle = s.color;
-  const f = shapeStrokeFactor(s);
   ctx.lineWidth = settings.strokeWidth * f;
   applyStrokeStyle(f);
-  ctx.stroke();
+
+  if (anim) {
+    // Animating: per-frame point positions, no Path2D cache (would be
+    // rebuilt every frame for nothing).
+    ensureVisBuf(n);
+    for (let i = 0; i < n; i++) animatedPointInto(pts[i], anim, visBuf[i]);
+    ctx.beginPath();
+    ctx.moveTo(visBuf[0].x, visBuf[0].y);
+    for (let i = 1; i < n; i++) ctx.lineTo(visBuf[i].x, visBuf[i].y);
+    ctx.closePath();
+    ctx.stroke();
+  } else {
+    // Settled: build a Path2D once and stroke it every frame thereafter.
+    // Invalidated when the shape's points change (only happens at anim bake,
+    // which sets s._path2D = null in update()). With thousands of pieces
+    // most of which are never re-cut, this avoids re-issuing 10–28 lineTo
+    // commands per shape per frame.
+    if (!s._path2D) {
+      const path = new Path2D();
+      path.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < n; i++) path.lineTo(pts[i].x, pts[i].y);
+      path.closePath();
+      s._path2D = path;
+    }
+    ctx.stroke(s._path2D);
+  }
   ctx.setLineDash([]);
-  // rivets — single beginPath/fill per shape
+
+  // rivets — single beginPath/fill per shape, skipped entirely if the
+  // dots would be sub-pixel anyway (no point burning draw calls on them)
   if (settings.strokeStyle === 'rivets') {
+    const r = 1.2 * f;
+    if (r < 0.4) return;
     ctx.fillStyle = '#5c5c5c';
     const spacing = DOT_SPACING * f;
-    const r = 1.2 * f;
     ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const p1 = visBuf[i], p2 = visBuf[(i + 1) % n];
-      const dx = p2.x - p1.x, dy = p2.y - p1.y;
-      const len = Math.hypot(dx, dy);
-      if (len < spacing * 1.2) continue;
-      const count = Math.max(1, Math.floor(len / spacing));
-      for (let k = 1; k < count; k++) {
-        const t = k / count;
-        const x = p1.x + dx * t;
-        const y = p1.y + dy * t;
-        ctx.moveTo(x + r, y);
-        ctx.arc(x, y, r, 0, Math.PI * 2);
+    if (anim) {
+      for (let i = 0; i < n; i++) {
+        const p1 = visBuf[i], p2 = visBuf[(i + 1) % n];
+        const dx = p2.x - p1.x, dy = p2.y - p1.y;
+        const len = Math.hypot(dx, dy);
+        if (len < spacing * 1.2) continue;
+        const count = Math.max(1, Math.floor(len / spacing));
+        for (let k = 1; k < count; k++) {
+          const t = k / count;
+          const x = p1.x + dx * t;
+          const y = p1.y + dy * t;
+          ctx.moveTo(x + r, y);
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+        }
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        const p1 = pts[i], p2 = pts[(i + 1) % n];
+        const dx = p2.x - p1.x, dy = p2.y - p1.y;
+        const len = Math.hypot(dx, dy);
+        if (len < spacing * 1.2) continue;
+        const count = Math.max(1, Math.floor(len / spacing));
+        for (let k = 1; k < count; k++) {
+          const t = k / count;
+          const x = p1.x + dx * t;
+          const y = p1.y + dy * t;
+          ctx.moveTo(x + r, y);
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+        }
       }
     }
     ctx.fill();
@@ -1760,8 +1890,13 @@ function drawCutLine() {
 }
 
 function shapeIsVisible(s, v) {
+  const baseR = getBoundingRadius(s);
+  // Tiny-shape cull: skip rendering anything whose on-screen bounding circle
+  // is smaller than ~1.5 px — invisible at that size, but each one would
+  // still cost a stroke call.
+  if (baseR * camera.scale < 1.5) return false;
   const c = getCentroid(s);
-  let r = getBoundingRadius(s);
+  let r = baseR;
   if (s.anim) r += Math.hypot(s.anim.targetDx, s.anim.targetDy);
   return c.x + r >= v.x0 && c.x - r <= v.x1
       && c.y + r >= v.y0 && c.y - r <= v.y1;
