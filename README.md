@@ -52,9 +52,13 @@ that builds on the original challenge with several layered features:
     motion direction and compresses it perpendicular to it.
 - **Collision-aware separation (SAT)**: after a cut, all pieces (the new
   halves *and* any other shape they intrude into) are pushed apart by an
-  iterative relaxation loop using the Separating Axis Theorem. The result is
-  guaranteed to have no overlapping polygons — neighbors absorb the impact and
-  shift to make room.
+  iterative relaxation loop using the Separating Axis Theorem. The
+  separation tolerance is in screen pixels (the world-unit threshold scales
+  with `camera.scale`), so the same "essentially touching" threshold applies
+  at any zoom. A final cleanup sweep then drops the smaller of any residual
+  overlapping pair the relaxation couldn't fully resolve at very high N.
+  Combined with the bg-filled / newest-under rendering pass below, any
+  remaining sub-pixel residual is masked visually.
 - **Marker / rivet rendering**: shapes are drawn as outlines (no fill) in a
   felt-tip style with small grey "rivets" along the perimeter. Stroke style is
   switchable: rivets, solid, dashed, dotted.
@@ -68,20 +72,29 @@ that builds on the original challenge with several layered features:
   the line itself for a quick "spark of impact" feel. Glow size, decay and
   intensity are configurable.
 - **Single / multi-piece colorization**: across the whole cut path, one or
-  more (configurable) of the new pieces inherit the cut line's color.
+  more (configurable) of the new pieces inherit the cut line's color. In
+  Pan and Zoom-infini modes, the first colored piece is forced to be the
+  visible new piece **closest to the viewport centre** so the colorization
+  always lands where the user is looking; the remaining picks stay
+  uniformly random across all new pieces.
 - **Color fade-back**: colored pieces gradually return to neutral grey over a
-  random window. When a colored piece is itself recut, both halves inherit and
-  continue the same fade; the newly chosen piece on the next cut starts a
-  fresh one.
+  random window. When a colored piece is itself recut, only **one** of the
+  two halves (the first returned by the polygon split) keeps the parent's
+  colour and continues the same fade; the other resets to neutral and only
+  becomes coloured if picked by the colorization step on this same cut.
 - **Three camera modes**:
   - *Fixe* — no camera animation, the whole canvas stays in view.
   - *Pan* — for each cycle, pan + zoom into a cluster anchored to one of the
     initial shapes, do N cuts inside that zone, pan back out, pick another.
     Framing follows the current bounds of the zone's descendants.
   - *Zoom infini* — recursive drilling: do N cuts in the current view, then
-    zoom further into the largest visible piece and repeat. Stops when the
-    visible area runs out of cuttable pieces or the cumulative scale gets out
-    of hand, then resets to the overview.
+    zoom further into a specific piece and repeat. The drill target is the
+    largest cuttable visible piece such that, framed at **50% screen
+    occupancy** (bounding diameter = half the smaller viewport dimension)
+    with the piece exactly centred, the new viewport stays fully **inside**
+    the current one — every step zooms only into already-visible territory.
+    Stops when no piece satisfies the constraint or the cumulative scale
+    gets silly, then resets to the overview.
 - **Zoom-aware rendering & physics**: at any zoom level, stroke width, rivet
   spacing/radius, dash patterns, and the cut separation distance are scaled by
   the inverse of `camera.scale` so they all keep a constant on-screen size.
@@ -107,6 +120,10 @@ that builds on the original challenge with several layered features:
   (line draw, animation duration, pan duration, glow decay, fade, gesture
   inactivity, …) speeds up proportionally; HUD frame-time stays honest
   (recorded with real `dt`).
+- **Camera mode toggle** (top-left button next to the speed cycler, cycles
+  *FIXE* / *PAN* / *ZOOM*): mirrors the *Mode caméra* select in the panel
+  for one-click switching without opening settings. State is shared with
+  the panel — changing one keeps the other in sync.
 - **Vignette**: a CSS overlay (`backdrop-filter: blur` masked by a radial
   gradient) that softens the edges of the canvas without affecting the
   rendered pixels — gives a focus-on-center look while letting pieces
@@ -119,7 +136,7 @@ that builds on the original challenge with several layered features:
 - **Randomised cuts per zone**: the camera cycle uses `Coupes min` /
   `Coupes max` (default 3 / 6) — a uniform random pick per cluster — so
   each zone gets a different rhythm before the camera advances.
-- **PNG export** (⤓ button, top right): pauses the simulation and shows a
+- **PNG export** (camera icon, top right): pauses the simulation and shows a
   full-screen overlay. Drag a region to crop, or use **Tout cadrer** to
   auto-fit every shape into the frame. The export re-renders into an
   offscreen canvas at `exportScale×` the live resolution (default 3×, so
@@ -232,11 +249,35 @@ degradation in real time.
   500 ms instead of being polled at 60 Hz. Saves Mops/sec when the demo
   has finally exhausted everything cuttable, leaving CPU for the
   in-flight animations to settle gracefully.
+- **Two-phase cut for perceived smoothness**: the heavy work (`prepareCut`
+  — convex splits, SAT relaxation, cleanup, building the next shape array)
+  runs **eagerly** when a cut starts, before the line begins drawing. The
+  result sits in `cutState.prepared` until the line completes its draw
+  animation, at which point `commitPreparedCut` swaps the new shapes in
+  (cheap: array assignment + shatter sound). The total wall time is
+  unchanged, but the freeze is hidden under click latency rather than
+  interrupting an animation in flight — much smoother at 100k+ pieces.
+- **SAT cleanup pass + scale-aware tolerance**: the relaxation runs up to
+  60 iterations, then a final broad-phase sweep catches any residual
+  overlapping pair and drops the **smaller** (by area) of the two — rather
+  than pushing further and risking a chain reaction in dense neighbourhoods.
+  The "treat as separated" tolerance (`_mtvEps`) is set to `0.5 / camera.scale`
+  at each cut so it stays sub-pixel on screen at any zoom (previously a
+  fixed 0.5 world-unit value translated to dozens of screen pixels of
+  tolerated overlap in zoom-infini mode).
+- **Bg-filled / newest-under rendering**: each piece is filled with the
+  background colour before being stroked, and freshly-cut pieces are
+  inserted at the **front** of the shape array so older survivors render
+  on top. Combined, this masks any sub-pixel SAT residual that the
+  relaxation/cleanup couldn't fully resolve — the older, larger piece's
+  fill covers the newer, smaller piece underneath. ~50% extra rendering
+  cost on visible pieces, kept in check by the viewport culling.
 - **Lower `MIN_AREA` + larger `ZONE_TOLERANCE`**: the cuttable threshold
   is 50 px² (≈ radius 4) and zone-membership tolerance is 250 px, so
   thousands of cumulative cuts can keep happening past the previous
-  ~10k-piece exhaustion limit (now reaches 30k+ at 60 fps on a typical
-  laptop before render becomes the bottleneck).
+  ~10k-piece exhaustion limit (now reaches 100k+ pieces with the
+  prepare/commit split absorbing the per-cut spike, and the rendering
+  bottleneck only kicking in well past that on a typical laptop).
 - **Performance HUD** (bottom right): pieces count, smoothed FPS + frame
   time over the last 60 frames, and a "Charge" ratio of current FPS vs the
   best FPS observed in the session. Goes orange below 80% of peak and red
@@ -249,8 +290,10 @@ Open `index.html` in any modern browser. No build step, no server.
 - Click the canvas, or press `space` / `r`, to reset (DEMO mode).
 - In PLAY mode, each click on the canvas triggers a cut at that point.
 - Two-finger drag (touch) or trackpad scroll = pan; pinch / `ctrl`+wheel = zoom.
-- Top-left: **DEMO / PLAY** toggle and the **speed** cycler (0.5×–3×).
-- Top-right: ⤓ exports a PNG (drag a region or *Tout cadrer*) and ⚙ opens the settings.
+- Top-left: **DEMO / PLAY** toggle, the **speed** cycler (0.5×–3×), and the
+  **camera mode** cycler (*FIXE* / *PAN* / *ZOOM*).
+- Top-right: the camera icon exports a PNG (drag a region or *Tout cadrer*)
+  and ⚙ opens the settings.
 - *Recommencer* regenerates the scene; *Défauts* restores the default settings.
 
 ## Notes

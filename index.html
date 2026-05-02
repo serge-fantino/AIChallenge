@@ -11,6 +11,7 @@
       font: 12px -apple-system, system-ui, sans-serif;
       color: #888; user-select: none;
       pointer-events: none;
+      z-index: 10;
     }
     .toggle {
       position: fixed; top: 12px; right: 12px;
@@ -59,6 +60,22 @@
       min-width: 44px;
     }
     .speed-toggle:hover { background: rgba(200,200,200,0.72); }
+    .cam-toggle {
+      position: fixed; top: 12px; left: 156px;
+      height: 32px; padding: 0 12px;
+      border: none;
+      background: rgba(200,200,200,0.5);
+      border-radius: 8px; cursor: pointer;
+      font: 600 12px -apple-system, system-ui, sans-serif;
+      letter-spacing: 0.1em;
+      color: #1a1a1a;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+      z-index: 100;
+      user-select: none;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      min-width: 60px;
+    }
+    .cam-toggle:hover { background: rgba(200,200,200,0.72); }
     .toggle.export { right: 60px; }
     #cropOverlay {
       position: fixed; inset: 0;
@@ -182,11 +199,11 @@
   </div>
   <button class="mode-toggle" id="modeBtn" title="Basculer mode démo / interactif">DEMO</button>
   <button class="speed-toggle" id="speedBtn" title="Vitesse globale">1×</button>
+  <button class="cam-toggle" id="camModeBtn" title="Mode caméra">PAN</button>
   <button class="toggle export" id="exportBtn" title="Exporter en PNG">
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-      <polyline points="7 10 12 15 17 10"/>
-      <line x1="12" y1="15" x2="12" y2="3"/>
+      <path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+      <circle cx="12" cy="13" r="4"/>
     </svg>
   </button>
   <button class="toggle" id="toggleBtn" title="Réglages">⚙</button>
@@ -1005,6 +1022,11 @@ function getAxes(pts) {
 let _aabbX0 = null, _aabbY0 = null, _aabbX1 = null, _aabbY1 = null;
 const _satGrid = new Map();
 const _projOut = { mn: 0, mx: 0 };
+// MTV "treat as separated" tolerance, in WORLD units. Callers scale this
+// down by camera.scale before each relaxation/cleanup pass so it stays
+// sub-pixel on screen — at high zoom the previous fixed 0.5 world value
+// translated to dozens of screen pixels of tolerated overlap.
+let _mtvEps = 0.5;
 
 function ensureAABBBuffers(n) {
   if (_aabbX0 && _aabbX0.length >= n) return;
@@ -1085,7 +1107,7 @@ function mtvAxes(polyA, polyB, axesA, axesB) {
     projectInto(polyB, ax.x, ax.y, _projOut);
     const b1 = _projOut.mn, b2 = _projOut.mx;
     const o = (a2 < b2 ? a2 : b2) - (a1 > b1 ? a1 : b1);
-    if (o <= 0.5) return null;
+    if (o <= _mtvEps) return null;
     if (o < minOverlap) { minOverlap = o; axisX = ax.x; axisY = ax.y; }
   }
   for (let k = 0; k < axesB.length; k++) {
@@ -1095,7 +1117,7 @@ function mtvAxes(polyA, polyB, axesA, axesB) {
     projectInto(polyB, ax.x, ax.y, _projOut);
     const b1 = _projOut.mn, b2 = _projOut.mx;
     const o = (a2 < b2 ? a2 : b2) - (a1 > b1 ? a1 : b1);
-    if (o <= 0.5) return null;
+    if (o <= _mtvEps) return null;
     if (o < minOverlap) { minOverlap = o; axisX = ax.x; axisY = ax.y; }
   }
   const ca = centroid(polyA), cb = centroid(polyB);
@@ -1292,6 +1314,42 @@ function cameraForShape(s) {
   return { cx: c.x, cy: c.y, scale: Math.max(1, Math.min(sX, sY)) };
 }
 
+// Zoom-infini drill target: the largest cuttable visible piece whose
+// "50%-occupancy framing" (bounding diameter = ZOOM_OCCUPANCY × min(W,H) on
+// screen, piece centroid at the centre of the new viewport) keeps the new
+// viewport fully inside the current one. Returns { shape, cam } or null.
+const ZOOM_OCCUPANCY = 0.5;
+function pickZoomTarget() {
+  const v = visibleRect();
+  const minDim = Math.min(W, H);
+  let best = null, bestArea = 0, bestCam = null;
+  for (const s of shapes) {
+    if (!isCuttable(s)) continue;
+    const c = finalCentroid(s);
+    if (c.x < v.x0 || c.x > v.x1 || c.y < v.y0 || c.y > v.y1) continue;
+    const r = getBoundingRadius(s);
+    if (r <= 0) continue;
+    // scale so that 2*r*scale = ZOOM_OCCUPANCY * min(W,H) on screen
+    const newScale = (ZOOM_OCCUPANCY * minDim) / (2 * r);
+    if (newScale <= camera.scale * 1.05) continue;
+    if (newScale > 250) continue;
+    const halfW = (W / 2) / newScale;
+    const halfH = (H / 2) / newScale;
+    // piece must be centred in the new viewport AND that viewport must
+    // fit inside the current one — so the centroid needs enough margin
+    // from every current-viewport edge.
+    if (c.x - halfW < v.x0 || c.x + halfW > v.x1) continue;
+    if (c.y - halfH < v.y0 || c.y + halfH > v.y1) continue;
+    const a = area(s.points);
+    if (a > bestArea) {
+      bestArea = a;
+      best = s;
+      bestCam = { cx: c.x, cy: c.y, scale: newScale };
+    }
+  }
+  return best ? { shape: best, cam: bestCam } : null;
+}
+
 // Prefer shapes whose centroid lies inside the central 20% radius of the
 // visible region; fall back to the full pool if nothing matches.
 function preferCenter(candidates) {
@@ -1362,8 +1420,12 @@ function startCutOnShape(targetShape) {
   const line = makeRandomCutLineThrough(targetShape);
   if (!line) return false;
   const lineColor = `hsl(${Math.random() * 360}, 80%, 50%)`;
-  cutState = { phase: 'draw', t: 0, line, lineColor, lineColorRGB: parseHSL(lineColor) };
+  cutState = { phase: 'draw', t: 0, line, lineColor, lineColorRGB: parseHSL(lineColor), prepared: null };
+  // laser fires before the heavy compute — Web Audio scheduling is non-
+  // blocking, so the sound starts immediately even if the main thread
+  // freezes for a moment in prepareCut at very high piece counts.
   audio.laser();
+  cutState.prepared = prepareCut(line);
   return true;
 }
 
@@ -1371,8 +1433,9 @@ function startCutAtPoint(worldPoint) {
   const line = makeRandomCutLineAt(worldPoint);
   if (!line) return false;
   const lineColor = `hsl(${Math.random() * 360}, 80%, 50%)`;
-  cutState = { phase: 'draw', t: 0, line, lineColor, lineColorRGB: parseHSL(lineColor) };
+  cutState = { phase: 'draw', t: 0, line, lineColor, lineColorRGB: parseHSL(lineColor), prepared: null };
   audio.laser();
+  cutState.prepared = prepareCut(line);
   return true;
 }
 
@@ -1394,7 +1457,19 @@ function pickK(arr, k) {
   return a.slice(0, k);
 }
 
-function applyCut(line) {
+// Heavy half: splits every cuttable shape, runs SAT relaxation, builds the
+// new shapes array and decides which pieces inherit the cut color. Does NOT
+// mutate `shapes` — returns the prepared result so the caller can defer the
+// visible swap. Called eagerly at cut start so the freeze happens before the
+// line animation rather than mid-flight (perceived as click latency, not a
+// motion hitch).
+function prepareCut(line) {
+  // SAT tolerance: 0.5 screen pixels at the current camera scale. At
+  // scale=1 we keep the legacy 0.5 world-unit deadband; at high zoom we
+  // tighten so a half-pixel screen overlap is no longer considered
+  // "separated" (this was letting visible overlaps slip through in
+  // zoom-infini cycles).
+  _mtvEps = 0.5 / Math.max(1, camera.scale);
   for (const s of shapes) finalizeAnim(s);
   const items = [];
   for (const s of shapes) {
@@ -1420,11 +1495,14 @@ function applyCut(line) {
     const sideA = line.a * ca.x + line.b * ca.y + line.c;
     const dir = sideA >= 0 ? 1 : -1;
     const spin = (0.1 + Math.random() * 0.2) * (Math.random() < 0.5 ? 1 : -1);
+    // When a colored piece is cut, only one half inherits the color/fade —
+    // we keep it on `a` (the first half returned by splitPolygon). The other
+    // half resets to neutral and will only get colored if picked by the
+    // colorization step below.
     const fadeA = s.fade ? { ...s.fade } : null;
-    const fadeB = s.fade ? { ...s.fade } : null;
     items.push({ basePoints: a, color: s.color, fade: fadeA,
       dx: dir * line.a * sep, dy: dir * line.b * sep, spin, isCut: true });
-    items.push({ basePoints: b, color: s.color, fade: fadeB,
+    items.push({ basePoints: b, color: null, fade: null,
       dx: -dir * line.a * sep, dy: -dir * line.b * sep, spin: -spin, isCut: true });
   }
   const targets = items.map(it => it.basePoints.map(p => ({ x: p.x + it.dx, y: p.y + it.dy })));
@@ -1439,7 +1517,7 @@ function applyCut(line) {
     itemAxes[i] = getAxes(targets[i]);
   }
   const cellSize = Math.max(20, avgAABBDiag(N));
-  const MAX_ITER = 40;
+  const MAX_ITER = 60;
   for (let iter = 0; iter < MAX_ITER; iter++) {
     rebuildSATGrid(N, cellSize);
     let any = false;
@@ -1468,9 +1546,54 @@ function applyCut(line) {
     }
     if (!any) break;
   }
-  const next = [];
+  // Cleanup pass: at very high N, MAX_ITER can be exhausted before the SAT
+  // relaxation fully converges — a few residual pair overlaps remain in
+  // densely-packed chains. Rather than push further (which can ricochet new
+  // overlaps into neighbours), drop the smaller of each remaining pair.
+  // Single broad-phase sweep, ~one extra iteration of cost.
+  const toDrop = new Uint8Array(N);
+  rebuildSATGrid(N, cellSize);
+  for (const bucket of _satGrid.values()) {
+    const blen = bucket.length;
+    if (blen < 2) continue;
+    for (let bi = 0; bi < blen; bi++) {
+      const i = bucket[bi];
+      if (toDrop[i]) continue;
+      for (let bj = bi + 1; bj < blen; bj++) {
+        const j = bucket[bj];
+        if (toDrop[j]) continue;
+        if (_aabbX1[i] < _aabbX0[j] || _aabbX1[j] < _aabbX0[i] ||
+            _aabbY1[i] < _aabbY0[j] || _aabbY1[j] < _aabbY0[i]) continue;
+        const v = mtvAxes(targets[i], targets[j], itemAxes[i], itemAxes[j]);
+        if (!v) continue;
+        const ai = Math.abs(area(targets[i]));
+        const aj = Math.abs(area(targets[j]));
+        if (ai < aj) { toDrop[i] = 1; break; }
+        else { toDrop[j] = 1; }
+      }
+    }
+  }
+  // Build two arrays so the freshly-cut pieces end up at the FRONT of the
+  // final shape list. Render order = array order, and last-drawn ends up on
+  // top — so older surviving pieces (drawn later) naturally cover any
+  // residual overlap from new cut halves drawn under them. Combined with the
+  // bg fill in drawShape, this masks the SAT overlaps the relaxation can't
+  // resolve at very high N.
+  const cutShapes = [];
+  const otherShapes = [];
   const newCutIndices = [];
-  for (const item of items) {
+  // In zoom-infini and pan modes, also track new pieces inside the current
+  // viewport, and pick the one closest to the viewport centre — so colorized
+  // pieces consistently land where the user is looking.
+  const checkVisible = settings.cameraMode === 'zoom' || settings.cameraMode === 'pan';
+  const visRect = checkVisible ? visibleRect() : null;
+  const visCenterX = checkVisible ? (visRect.x0 + visRect.x1) * 0.5 : 0;
+  const visCenterY = checkVisible ? (visRect.y0 + visRect.y1) * 0.5 : 0;
+  let centralVisIdx = -1;
+  let centralVisDistSq = Infinity;
+  for (let ii = 0; ii < items.length; ii++) {
+    if (toDrop[ii]) continue;
+    const item = items[ii];
     const moves = item.isCut || Math.abs(item.dx) > 0.5 || Math.abs(item.dy) > 0.5 || item.spin !== 0;
     const shape = { points: item.basePoints, color: item.color, fade: item.fade };
     if (moves) {
@@ -1498,12 +1621,40 @@ function applyCut(line) {
         spread: settings.jellySpread,
       };
     }
-    next.push(shape);
-    if (item.isCut) newCutIndices.push(next.length - 1);
+    if (item.isCut) {
+      const idx = cutShapes.length;
+      cutShapes.push(shape);
+      newCutIndices.push(idx);
+      if (checkVisible) {
+        const c = centroid(item.basePoints);
+        if (c.x >= visRect.x0 && c.x <= visRect.x1 &&
+            c.y >= visRect.y0 && c.y <= visRect.y1) {
+          const dx = c.x - visCenterX, dy = c.y - visCenterY;
+          const d = dx * dx + dy * dy;
+          if (d < centralVisDistSq) { centralVisDistSq = d; centralVisIdx = idx; }
+        }
+      }
+    } else {
+      otherShapes.push(shape);
+    }
   }
+  // newest first (drawn under), then older survivors (drawn on top).
+  const next = cutShapes.concat(otherShapes);
   const k = Math.max(0, Math.min(settings.colorCount, newCutIndices.length));
   const fadeSpan = Math.max(0, settings.fadeMax - settings.fadeMin);
-  for (const idx of pickK(newCutIndices, k)) {
+  // In zoom-infini and pan modes, force the first colored piece to be the
+  // visible one closest to the viewport centre so the cut is never silent on
+  // screen and colorization tracks the user's focal point. The remaining k-1
+  // picks stay uniformly random across all new pieces.
+  let chosen;
+  if (k > 0 && checkVisible && centralVisIdx >= 0) {
+    const first = centralVisIdx;
+    const rest = newCutIndices.filter(i => i !== first);
+    chosen = [first, ...pickK(rest, k - 1)];
+  } else {
+    chosen = pickK(newCutIndices, k);
+  }
+  for (const idx of chosen) {
     next[idx].color = cutState.lineColor;
     next[idx].fade = {
       startRGB: cutState.lineColorRGB.slice(),
@@ -1511,8 +1662,16 @@ function applyCut(line) {
       duration: settings.fadeMin + Math.random() * fadeSpan
     };
   }
-  shapes = next;
-  if (newCutIndices.length > 0) audio.shatter();
+  return { next, hasShatter: newCutIndices.length > 0 };
+}
+
+// Cheap half: swap the prepared shapes in (animations and shatter sound
+// fire from here so the visible cut starts in sync with the line completing
+// its draw).
+function commitPreparedCut(prepared) {
+  if (!prepared) return;
+  shapes = prepared.next;
+  if (prepared.hasShatter) audio.shatter();
 }
 
 function startPanOut() {
@@ -1532,32 +1691,21 @@ function pickCutCount() {
 }
 
 function zoomDeeperOrReset() {
-  const next = pickLargestVisible();
-  if (!next) { startPanOut(); return; }
-  const targetCam = cameraForShape(next);
-  // bail out if we're not making meaningful progress, or zoom is getting silly
-  if (targetCam.scale <= camera.scale * 1.05 || targetCam.scale > 250) {
-    startPanOut();
-    return;
-  }
+  const target = pickZoomTarget();
+  if (!target) { startPanOut(); return; }
   cinematicState.phase = 'panIn';
   cinematicState.cutsRemaining = pickCutCount();
-  animateCamera(targetCam, settings.camPanDuration, () => {
+  animateCamera(target.cam, settings.camPanDuration, () => {
     if (cinematicState) cinematicState.phase = 'cutting';
   });
 }
 
 function zoomDeeperInteractive() {
-  const next = pickLargestVisible();
-  if (!next) { startPanOut(); return; }
-  const targetCam = cameraForShape(next);
-  if (targetCam.scale <= camera.scale * 1.05 || targetCam.scale > 250) {
-    startPanOut();
-    return;
-  }
+  const target = pickZoomTarget();
+  if (!target) { startPanOut(); return; }
   cinematicState.phase = 'panIn';
   cinematicState.cutsRemaining = pickCutCount();
-  animateCamera(targetCam, settings.camPanDuration, () => {
+  animateCamera(target.cam, settings.camPanDuration, () => {
     if (cinematicState) cinematicState.phase = 'cutting';
   });
 }
@@ -1710,7 +1858,8 @@ function update(dt) {
     cutState.t += dt;
     if (cutState.phase === 'draw' && cutState.t >= settings.lineSpeed) {
       cutState.phase = 'split'; cutState.t = 0;
-      applyCut(cutState.line);
+      commitPreparedCut(cutState.prepared);
+      cutState.prepared = null;
     } else if (cutState.phase === 'split' && cutState.t >= settings.splitPhase) {
       cutState.phase = 'fade'; cutState.t = 0;
     } else if (cutState.phase === 'fade' && cutState.t >= settings.lineSpeed) {
@@ -1770,6 +1919,7 @@ function drawShape(s) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.strokeStyle = s.color;
+  ctx.fillStyle = settings.bgColor;
   ctx.lineWidth = settings.strokeWidth * f;
   applyStrokeStyle(f);
 
@@ -1782,6 +1932,12 @@ function drawShape(s) {
     ctx.moveTo(visBuf[0].x, visBuf[0].y);
     for (let i = 1; i < n; i++) ctx.lineTo(visBuf[i].x, visBuf[i].y);
     ctx.closePath();
+    // fill first (with bg) so this piece masks anything drawn earlier in the
+    // frame — combined with the newest-first ordering of `shapes`, older
+    // pieces drawn later naturally cover newer pieces underneath. This
+    // hides the residual SAT overlaps that the relaxation/cleanup couldn't
+    // fully resolve at very high N.
+    ctx.fill();
     ctx.stroke();
   } else {
     // Settled: build a Path2D once and stroke it every frame thereafter.
@@ -1796,6 +1952,7 @@ function drawShape(s) {
       path.closePath();
       s._path2D = path;
     }
+    ctx.fill(s._path2D);
     ctx.stroke(s._path2D);
   }
   ctx.setLineDash([]);
@@ -2150,6 +2307,7 @@ function resetSettings() {
   applyHint();
   updateModeButton();
   updateSpeedButton();
+  updateCamModeButton();
   saveSettings();
 }
 
@@ -2167,6 +2325,12 @@ function applyVignette() {
 
 function applyCamMode() {
   document.body.classList.toggle('no-cam', settings.cameraMode === 'fix');
+}
+const CAM_MODE_LABELS = { fix: 'FIXE', pan: 'PAN', zoom: 'ZOOM' };
+function updateCamModeButton() {
+  const btn = document.getElementById('camModeBtn');
+  if (!btn) return;
+  btn.textContent = CAM_MODE_LABELS[settings.cameraMode] || settings.cameraMode.toUpperCase();
 }
 function applyHint() {
   const hintEl = document.querySelector('.hint');
@@ -2202,6 +2366,7 @@ bindRange('p_shapeInset',     'shapeInset',     v => Math.round(v * 100) + '%');
 bindRange('p_shapeGap',       'shapeGap',       fmtPx);
 bindSelect('p_cameraMode',    'cameraMode',     () => {
   applyCamMode();
+  updateCamModeButton();
   cinematicState = null;
   if (settings.cameraMode === 'fix' &&
       (camera.scale !== 1 || camera.cx !== W/2 || camera.cy !== H/2)) {
@@ -2302,6 +2467,19 @@ document.getElementById('speedBtn').addEventListener('click', () => {
   settings.speed = SPEED_VALUES[(i + 1) % SPEED_VALUES.length];
   updateSpeedButton();
   saveSettings();
+});
+
+const CAM_MODE_ORDER = ['fix', 'pan', 'zoom'];
+document.getElementById('camModeBtn').addEventListener('click', () => {
+  const cur = settings.cameraMode;
+  const i = Math.max(0, CAM_MODE_ORDER.indexOf(cur));
+  const next = CAM_MODE_ORDER[(i + 1) % CAM_MODE_ORDER.length];
+  // route through the panel select so its existing change handler runs
+  // (applyCamMode + updateCamModeButton + cinematicState reset + identity-cam
+  // animation in fix mode + saveSettings).
+  const sel = document.getElementById('p_cameraMode');
+  sel.value = next;
+  sel.dispatchEvent(new Event('change'));
 });
 
 // ---------- interactive export (crop + fit-all) ----------
@@ -2486,6 +2664,7 @@ applyCamMode();
 applyHint();
 updateModeButton();
 updateSpeedButton();
+updateCamModeButton();
 reset();
 requestAnimationFrame(loop);
 </script>
