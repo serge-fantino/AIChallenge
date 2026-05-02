@@ -220,7 +220,7 @@
     <h2>Setup</h2>
     <div class="row">
       <label>Formes</label>
-      <input type="range" id="p_count" min="1" max="30" step="1">
+      <input type="range" id="p_count" min="1" max="1000" step="1">
       <span class="val" id="v_count"></span>
     </div>
     <div class="row">
@@ -395,6 +395,18 @@
         <option value="dotted">Pointillés</option>
       </select>
     </div>
+    <div class="row">
+      <label>Palette</label>
+      <select id="p_palette">
+        <option value="none">Aucune</option>
+        <option value="mono-pink">Rose pastel</option>
+        <option value="mono-blue">Bleu pastel</option>
+        <option value="mono-green">Vert pastel</option>
+        <option value="mono-warm">Chaud pastel</option>
+        <option value="mono-purple">Violet pastel</option>
+        <option value="rainbow">Arc-en-ciel</option>
+      </select>
+    </div>
     <h2>Son</h2>
     <div class="row">
       <label>Activé</label>
@@ -415,7 +427,7 @@
   </div>
 <script>
 const defaultSettings = {
-  shapeCount: 20,
+  shapeCount: 500,
   shapeInset: 0.12,
   shapeGap: 8,
   cameraMode: 'pan',
@@ -445,6 +457,7 @@ const defaultSettings = {
   strokeColor: '#9a9a9a',
   strokeWidth: 5,
   strokeStyle: 'rivets',
+  palette: 'none',
   proportionalStroke: true,
   strokeRefRadius: 60,
   strokeMaxWidth: 18,
@@ -880,6 +893,25 @@ function poissonDiskPoints(rectW, rectH, minDist, maxPoints) {
   return points;
 }
 
+// Pastel palettes (single-hue families) + a saturated rainbow. Each entry
+// is an array of CSS color strings; null = no fill, falls back to bgColor.
+// Used as initial-shape fill colors and propagated to every cut piece so
+// the colour persists through every generation of cuts.
+const PALETTES = {
+  none: null,
+  'mono-pink':   ['hsl(345,55%,86%)', 'hsl(355,60%,80%)', 'hsl(335,50%,84%)', 'hsl(350,65%,78%)', 'hsl(340,55%,82%)'],
+  'mono-blue':   ['hsl(210,55%,86%)', 'hsl(220,60%,80%)', 'hsl(200,50%,84%)', 'hsl(215,65%,78%)', 'hsl(205,55%,82%)'],
+  'mono-green':  ['hsl(120,40%,84%)', 'hsl(140,45%,78%)', 'hsl(100,35%,86%)', 'hsl(150,50%,76%)', 'hsl(130,40%,82%)'],
+  'mono-warm':   ['hsl(35,65%,84%)',  'hsl(25,60%,80%)',  'hsl(50,70%,86%)',  'hsl(20,55%,82%)',  'hsl(40,60%,84%)'],
+  'mono-purple': ['hsl(270,40%,86%)', 'hsl(280,45%,80%)', 'hsl(260,35%,84%)', 'hsl(290,40%,82%)', 'hsl(275,35%,86%)'],
+  'rainbow':     ['hsl(0,70%,72%)',   'hsl(35,75%,72%)',  'hsl(60,75%,72%)',  'hsl(120,55%,68%)', 'hsl(180,55%,68%)', 'hsl(220,65%,72%)', 'hsl(280,55%,72%)', 'hsl(330,65%,72%)'],
+};
+function pickPaletteColor() {
+  const p = PALETTES[settings.palette];
+  if (!p) return null;
+  return p[Math.floor(Math.random() * p.length)];
+}
+
 function generateInitialShapes(count) {
   if (count <= 0 || W <= 0 || H <= 0) return [];
   // Inset the placement rect on each axis independently — `shapeInset` is a
@@ -917,10 +949,13 @@ function generateInitialShapes(count) {
   for (const p of pts) {
     const r = minR + Math.random() * Math.max(0, maxR - minR);
     const make = SHAPE_KINDS[Math.floor(Math.random() * SHAPE_KINDS.length)];
-    out.push({
+    const shape = {
       points: make(p.x + insetX, p.y + insetY, r),
       color: settings.strokeColor,
-    });
+    };
+    const fc = pickPaletteColor();
+    if (fc) shape.fillColor = fc;
+    out.push(shape);
   }
   // Same SAT relaxation we use during cuts: pushes any pair of shapes whose
   // polygons actually overlap (e.g. heptagon vertex protruding into a hex
@@ -1475,13 +1510,13 @@ function prepareCut(line) {
   for (const s of shapes) {
     if (!isCuttable(s)) {
       items.push({ basePoints: s.points, color: s.color, fade: s.fade || null,
-        dx: 0, dy: 0, spin: 0, isCut: false });
+        fillColor: s.fillColor, dx: 0, dy: 0, spin: 0, isCut: false });
       continue;
     }
     const result = splitPolygon(s.points, line);
     if (!result) {
       items.push({ basePoints: s.points, color: s.color, fade: s.fade || null,
-        dx: 0, dy: 0, spin: 0, isCut: false });
+        fillColor: s.fillColor, dx: 0, dy: 0, spin: 0, isCut: false });
       continue;
     }
     const [a, b] = result;
@@ -1495,14 +1530,14 @@ function prepareCut(line) {
     const sideA = line.a * ca.x + line.b * ca.y + line.c;
     const dir = sideA >= 0 ? 1 : -1;
     const spin = (0.1 + Math.random() * 0.2) * (Math.random() < 0.5 ? 1 : -1);
-    // When a colored piece is cut, only one half inherits the color/fade —
-    // we keep it on `a` (the first half returned by splitPolygon). The other
-    // half resets to neutral and will only get colored if picked by the
-    // colorization step below.
+    // When a colored piece is cut, only one half inherits the cut-line
+    // color/fade (kept on `a`); the other resets to neutral. fillColor
+    // (the per-shape palette base) is propagated to BOTH halves so the
+    // initial palette assignment persists through every cut generation.
     const fadeA = s.fade ? { ...s.fade } : null;
-    items.push({ basePoints: a, color: s.color, fade: fadeA,
+    items.push({ basePoints: a, color: s.color, fade: fadeA, fillColor: s.fillColor,
       dx: dir * line.a * sep, dy: dir * line.b * sep, spin, isCut: true });
-    items.push({ basePoints: b, color: null, fade: null,
+    items.push({ basePoints: b, color: null, fade: null, fillColor: s.fillColor,
       dx: -dir * line.a * sep, dy: -dir * line.b * sep, spin: -spin, isCut: true });
   }
   const targets = items.map(it => it.basePoints.map(p => ({ x: p.x + it.dx, y: p.y + it.dy })));
@@ -1596,6 +1631,7 @@ function prepareCut(line) {
     const item = items[ii];
     const moves = item.isCut || Math.abs(item.dx) > 0.5 || Math.abs(item.dy) > 0.5 || item.spin !== 0;
     const shape = { points: item.basePoints, color: item.color, fade: item.fade };
+    if (item.fillColor) shape.fillColor = item.fillColor;
     if (moves) {
       const c = centroid(item.basePoints);
       const mode = item.isCut ? settings.cutMode : 'rigid';
@@ -1919,7 +1955,10 @@ function drawShape(s) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.strokeStyle = s.color;
-  ctx.fillStyle = settings.bgColor;
+  // Per-shape fillColor (from the chosen palette) overrides the global bg
+  // fill, so initial palette colours show inside each piece and propagate
+  // unchanged through every cut generation.
+  ctx.fillStyle = s.fillColor || settings.bgColor;
   ctx.lineWidth = settings.strokeWidth * f;
   applyStrokeStyle(f);
 
@@ -2434,6 +2473,7 @@ bindRange('p_strokeRefRadius', 'strokeRefRadius', fmtPx);
 bindRange('p_strokeMaxWidth', 'strokeMaxWidth', fmtPx);
 bindRange('p_vignette',       'vignette',       fmtPx, applyVignette);
 bindSelect('p_strokeStyle',   'strokeStyle');
+bindSelect('p_palette',       'palette',        () => reset());
 bindCheckbox('p_audioOn',     'audioOn',        () => {
   audio.applyMasterVolume();
   if (!settings.audioOn) audio.ensureWind(false);

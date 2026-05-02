@@ -26,7 +26,8 @@ Demo here: https://serge-fantino.github.io/AIChallenge/
 A single self-contained `index.html` (vanilla JS + Canvas, no dependencies)
 that builds on the original challenge with several layered features:
 
-- **Initial scene**: ~20 random shapes (circles, triangles, parallelograms,
+- **Initial scene**: a configurable number of random shapes (default 500,
+  slider 1-1000) — circles, triangles, parallelograms,
   pentagons, hexagons, heptagons, octagons — slightly jittered per vertex so
   they don't look perfectly regular) placed by a **phyllotaxis spiral**
   starting at the canvas centre and growing outward at the golden angle —
@@ -82,6 +83,13 @@ that builds on the original challenge with several layered features:
   two halves (the first returned by the polygon split) keeps the parent's
   colour and continues the same fade; the other resets to neutral and only
   becomes coloured if picked by the colorization step on this same cut.
+- **Initial-shape palette**: each starting shape can be assigned a base fill
+  colour drawn from a built-in palette — five soft monochrome families
+  (pink / blue / green / warm / purple) plus a saturated rainbow. The
+  fill colour persists through every cut: both halves of any split inherit
+  the parent's palette colour, so the initial palette assignment carries
+  all the way through every generation. Selectable from the Settings
+  panel; defaults to *Aucune* (neutral bg fill, original look).
 - **Three camera modes**:
   - *Fixe* — no camera animation, the whole canvas stays in view.
   - *Pan* — for each cycle, pan + zoom into a cluster anchored to one of the
@@ -195,6 +203,7 @@ that builds on the original challenge with several layered features:
 | Apparence   | Trait max         | absolute cap on stroke thickness (proportional mode)   |
 | Apparence   | Vignette          | radial blur halo width at the edges (0 = off)          |
 | Apparence   | Style             | rivets / solid / dashed / dotted                       |
+| Apparence   | Palette           | initial-shape fill: Aucune / mono pastel ×5 / Arc-en-ciel |
 | Son         | Activé            | master mute toggle                                     |
 | Son         | Volume            | master volume (0–100%)                                 |
 
